@@ -1,10 +1,9 @@
 import { NextResponse } from 'next/server'
 import { prisma } from '@/lib/prisma'
 import {
-  discoverViaBingNews,
-  discoverViaGoogleNews,
   discoverViaBraveSearch,
   discoverViaYouTube,
+  discoverViaNewsAPI,
   fetchPageContent,
   identifyExpertInContentSimple,
   contentFingerprint,
@@ -130,6 +129,7 @@ export async function GET(req: Request) {
     const KIMI_KEY = process.env.KIMI_API_KEY
     const YOUTUBE_KEY = process.env.YOUTUBE_API_KEY
     const BRAVE_KEY = process.env.BRAVE_SEARCH_KEY
+    const NEWSAPI_KEY = process.env.NEWSAPI_KEY
     
     if (!KIMI_KEY) return errorResponse('KIMI_API_KEY not configured', 500)
 
@@ -174,25 +174,30 @@ export async function GET(req: Request) {
             `${expert.name} stock market`,
           ]
 
-      // 1a. Bing News RSS 搜索
-      for (const query of searchQueries.slice(0, 2)) {
-        try {
-          const items = await discoverViaBingNews(query, since)
-          discoveredItems.push(...items)
-          console.log(`[${expert.name}] Bing News "${query}": ${items.length} items`)
-        } catch (err) {
-          console.error(`[${expert.name}] Bing News error:`, (err as Error).message)
+      // 1a. Brave Search - 主要发现源（返回直接 URL）
+      if (BRAVE_KEY) {
+        for (const query of searchQueries.slice(0, 2)) {
+          try {
+            const items = await discoverViaBraveSearch(query, BRAVE_KEY, since)
+            discoveredItems.push(...items)
+            console.log(`[${expert.name}] Brave Search "${query}": ${items.length} items`)
+          } catch (err) {
+            console.error(`[${expert.name}] Brave Search error:`, (err as Error).message)
+          }
         }
       }
 
-      // 1b. Google News RSS 搜索
-      for (const query of searchQueries.slice(0, 1)) {
-        try {
-          const items = await discoverViaGoogleNews(query, since)
-          discoveredItems.push(...items)
-          console.log(`[${expert.name}] Google News "${query}": ${items.length} items`)
-        } catch (err) {
-          console.error(`[${expert.name}] Google News error:`, (err as Error).message)
+      // 1b. NewsAPI
+      if (NEWSAPI_KEY) {
+        const lang = isChinese ? 'zh' : 'en'
+        for (const query of searchQueries.slice(0, 1)) {
+          try {
+            const items = await discoverViaNewsAPI(query, NEWSAPI_KEY, since, lang)
+            discoveredItems.push(...items)
+            console.log(`[${expert.name}] NewsAPI "${query}" (lang=${lang}): ${items.length} items`)
+          } catch (err) {
+            console.error(`[${expert.name}] NewsAPI error:`, (err as Error).message)
+          }
         }
       }
 

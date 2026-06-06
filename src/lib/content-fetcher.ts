@@ -30,7 +30,6 @@ async function fetchWithRetry(url: string, options: RequestInit = {}, retries = 
           'User-Agent': getRandomUserAgent(),
           'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
           'Accept-Language': 'zh-CN,zh;q=0.9,en;q=0.8',
-          'Accept-Encoding': 'gzip, deflate, br',
           'Connection': 'keep-alive',
           ...options.headers,
         },
@@ -39,7 +38,6 @@ async function fetchWithRetry(url: string, options: RequestInit = {}, retries = 
       clearTimeout(timeoutId)
       
       if (res.status === 429 || res.status === 403) {
-        // 被限流，等待后重试
         const delay = RETRY_DELAY_MS * Math.pow(2, attempt)
         console.log(`[Retry] ${url} status ${res.status}, waiting ${delay}ms (attempt ${attempt + 1}/${retries + 1})`)
         await new Promise(r => setTimeout(r, delay))
@@ -63,154 +61,8 @@ async function fetchWithRetry(url: string, options: RequestInit = {}, retries = 
 // ==================== 内容发现层 (Discovery) ====================
 
 /**
- * 通过 Bing News RSS 搜索内容 - 参考 Universal-News-Scraper
- * 不需要知道具体 RSS URL，用搜索引擎自动发现
- */
-export async function discoverViaBingNews(query: string, since: Date): Promise<Array<{url: string; title: string; source: string; publishedAt: Date | null}>> {
-  const results: Array<{url: string; title: string; source: string; publishedAt: Date | null}> = []
-  
-  try {
-    // Bing News RSS - 免费，不需要 API key
-    const bingUrl = `https://www.bing.com/news/search?q=${encodeURIComponent(query)}&format=rss`
-    const res = await fetchWithRetry(bingUrl, {}, 1)
-    const text = await res.text()
-    
-    // 解析 RSS
-    const itemRegex = /<item[^>]*>([\s\S]*?)<\/item>/gi
-    const items = [...text.matchAll(itemRegex)]
-    
-    for (const match of items.slice(0, 10)) {
-      const xml = match[1]
-      
-      const getTag = (tag: string) => {
-        const m = xml.match(new RegExp(`<${tag}[^>]*>(?:<!\[CDATA\[)?([\s\S]*?)(?:\]\]>)?<\/${tag}>`, 'i'))
-        return m ? m[1].trim() : ''
-      }
-      
-      const title = getTag('title')
-      const link = getTag('link')
-      const pubDate = getTag('pubDate')
-      const source = getTag('source') || 'Bing News'
-      
-      if (!link || !title) continue
-      
-      // 检查日期
-      let publishedAt: Date | null = null
-      if (pubDate) {
-        const d = new Date(pubDate)
-        if (!isNaN(d.getTime())) {
-          if (d < since) continue
-          publishedAt = d
-        }
-      }
-      
-      // 清理 Bing 重定向 URL - 跟随重定向获取真实 URL
-      let cleanUrl = link
-      if (link.includes('bing.com/news/apiclick.aspx') || link.includes('bing.com/news/search')) {
-        try {
-          // 尝试跟随重定向
-          const headRes = await fetch(link, { method: 'HEAD', redirect: 'manual' })
-          if (headRes.status === 302 || headRes.status === 301) {
-            const location = headRes.headers.get('location')
-            if (location) {
-              cleanUrl = location
-            }
-          }
-        } catch {
-          // 如果 HEAD 失败，尝试从 URL 参数解码
-          const urlMatch = link.match(/[?&]url=([^&]+)/)
-          if (urlMatch) {
-            try {
-              cleanUrl = decodeURIComponent(urlMatch[1])
-            } catch { /* keep original */ }
-          }
-        }
-      }
-      
-      results.push({ url: cleanUrl, title, source: `Bing:${source}`, publishedAt })
-    }
-    
-    console.log(`[BingNews] "${query}": ${results.length} results`)
-  } catch (err) {
-    console.error(`[BingNews] Error for "${query}":`, (err as Error).message)
-  }
-  
-  return results
-}
-
-/**
- * 通过 Google News RSS 搜索内容
- */
-export async function discoverViaGoogleNews(query: string, since: Date): Promise<Array<{url: string; title: string; source: string; publishedAt: Date | null}>> {
-  const results: Array<{url: string; title: string; source: string; publishedAt: Date | null}> = []
-  
-  try {
-    // Google News RSS - 免费，不需要 API key
-    const googleUrl = `https://news.google.com/rss/search?q=${encodeURIComponent(query)}&hl=zh-HK&gl=HK&ceid=HK:zh-Hant`
-    const res = await fetchWithRetry(googleUrl, {}, 1)
-    const text = await res.text()
-    
-    const itemRegex = /<item[^>]*>([\s\S]*?)<\/item>/gi
-    const items = [...text.matchAll(itemRegex)]
-    
-    for (const match of items.slice(0, 10)) {
-      const xml = match[1]
-      
-      const getTag = (tag: string) => {
-        const m = xml.match(new RegExp(`<${tag}[^>]*>(?:<!\[CDATA\[)?([\s\S]*?)(?:\]\]>)?<\/${tag}>`, 'i'))
-        return m ? m[1].trim() : ''
-      }
-      
-      const title = getTag('title')
-      const link = getTag('link')
-      const pubDate = getTag('pubDate')
-      const source = getTag('source') || 'Google News'
-      
-      if (!link || !title) continue
-      
-      // Google News 链接解码
-      let cleanUrl = link
-      if (link.startsWith('https://news.google.com/rss/articles/')) {
-        // Google News 编码链接 - 尝试解码
-        try {
-          const articleId = link.replace('https://news.google.com/rss/articles/', '')
-          // Google 使用 base64 编码，解码后得到真实 URL
-          const decoded = Buffer.from(articleId, 'base64').toString('utf-8')
-          // 解码后的格式通常是: {URL}
-          const urlMatch = decoded.match(/https?:\/\/[^\x00-\x1f]+/)
-          if (urlMatch) {
-            cleanUrl = urlMatch[0].replace(/\x00/g, '').trim()
-          } else {
-            // 如果解码失败，跳过这个链接
-            continue
-          }
-        } catch {
-          continue
-        }
-      }
-      
-      let publishedAt: Date | null = null
-      if (pubDate) {
-        const d = new Date(pubDate)
-        if (!isNaN(d.getTime())) {
-          if (d < since) continue
-          publishedAt = d
-        }
-      }
-      
-      results.push({ url: cleanUrl, title, source: `Google:${source}`, publishedAt })
-    }
-    
-    console.log(`[GoogleNews] "${query}": ${results.length} results`)
-  } catch (err) {
-    console.error(`[GoogleNews] Error for "${query}":`, (err as Error).message)
-  }
-  
-  return results
-}
-
-/**
- * 通过 Brave Search API 搜索内容
+ * 通过 Brave Search API 搜索内容 - 主要发现源
+ * 返回直接可访问的网页 URL
  */
 export async function discoverViaBraveSearch(query: string, braveKey: string, since: Date): Promise<Array<{url: string; title: string; source: string; publishedAt: Date | null; description: string}>> {
   const results: Array<{url: string; title: string; source: string; publishedAt: Date | null; description: string}> = []
@@ -231,6 +83,14 @@ export async function discoverViaBraveSearch(query: string, braveKey: string, si
     
     for (const item of (data.web?.results || [])) {
       if (!item.url || !item.title) continue
+      
+      // 过滤掉社交媒体、视频平台（这些用专门 API）
+      const url = item.url
+      if (url.includes('youtube.com') || url.includes('youtu.be') || 
+          url.includes('facebook.com') || url.includes('twitter.com') ||
+          url.includes('x.com') || url.includes('instagram.com')) {
+        continue
+      }
       
       results.push({
         url: item.url,
@@ -293,11 +153,47 @@ export async function discoverViaYouTube(query: string, youtubeKey: string, sinc
   return results
 }
 
+/**
+ * 通过 NewsAPI 搜索内容
+ */
+export async function discoverViaNewsAPI(query: string, newsApiKey: string, since: Date, language: string = 'en'): Promise<Array<{url: string; title: string; source: string; publishedAt: Date | null; description: string}>> {
+  const results: Array<{url: string; title: string; source: string; publishedAt: Date | null; description: string}> = []
+  
+  try {
+    const fromDate = since.toISOString().split('T')[0]
+    const langParam = language ? `&language=${language}` : ''
+    const res = await fetchWithRetry(
+      `https://newsapi.org/v2/everything?q=${encodeURIComponent(query)}&from=${fromDate}&sortBy=publishedAt&pageSize=10${langParam}&apiKey=${newsApiKey}`,
+      {},
+      1
+    )
+    
+    const data = await res.json()
+    
+    for (const article of (data.articles || [])) {
+      if (!article.url || !article.title) continue
+      
+      results.push({
+        url: article.url,
+        title: article.title,
+        description: article.description || '',
+        source: `NewsAPI:${article.source?.name || 'unknown'}`,
+        publishedAt: article.publishedAt ? new Date(article.publishedAt) : null,
+      })
+    }
+    
+    console.log(`[NewsAPI] "${query}" (lang=${language}): ${results.length} results`)
+  } catch (err) {
+    console.error(`[NewsAPI] Error for "${query}":`, (err as Error).message)
+  }
+  
+  return results
+}
+
 // ==================== 内容抓取层 (Fetch) ====================
 
 /**
- * 从 URL 抓取网页全文 - 参考 news-aggregator 的 Readability 思路
- * 简单但有效的 HTML 到文本提取
+ * 从 URL 抓取网页全文
  */
 export async function fetchPageContent(url: string): Promise<{title: string; content: string; url: string} | null> {
   try {
@@ -339,6 +235,8 @@ export async function fetchPageContent(url: string): Promise<{title: string; con
         /class=["'][^"']*post[^"']*["'][^>]*>([\s\S]*?)<\/div>/i,
         /id=["']content["'][^>]*>([\s\S]*?)<\/div>/i,
         /id=["']main-content["'][^>]*>([\s\S]*?)<\/div>/i,
+        /class=["'][^"']*story[^"']*["'][^>]*>([\s\S]*?)<\/div>/i,
+        /class=["'][^"']*entry[^"']*["'][^>]*>([\s\S]*?)<\/div>/i,
       ]
       
       for (const pattern of contentPatterns) {
@@ -361,17 +259,15 @@ export async function fetchPageContent(url: string): Promise<{title: string; con
         const pMatches = [...body.matchAll(/<p[^>]*>([\s\S]*?)<\/p>/gi)]
         const pText = pMatches.map(m => htmlToText(m[1])).filter(t => t.length > 20).join('\n\n')
         
-        // 提取 div 中的文本块（可能是文章段落）
+        // 提取 div 中的文本块
         const divMatches = [...body.matchAll(/<div[^>]*>([\s\S]*?)<\/div>/gi)]
         const divText = divMatches
           .map(m => htmlToText(m[1]))
-          .filter(t => t.length > 50 && t.length < 2000) // 合理的段落长度
+          .filter(t => t.length > 50 && t.length < 2000)
           .join('\n\n')
         
-        // 选择更长的内容
         content = pText.length > divText.length ? pText : divText
         
-        // 如果还是不够，提取所有文本
         if (content.length < 500) {
           content = htmlToText(body)
         }
@@ -440,7 +336,7 @@ function htmlToText(html: string): string {
 // ==================== 专家识别层 (Identify) ====================
 
 /**
- * 检查内容是否包含专家名字 - 简化识别，不依赖 Kimi
+ * 检查内容是否包含专家名字
  */
 export function identifyExpertInContentSimple(
   content: string,
@@ -453,14 +349,11 @@ export function identifyExpertInContentSimple(
     if (!name) continue
     const lowerName = name.toLowerCase()
     
-    // 全名匹配
     if (text.includes(lowerName)) {
-      // 检查是否是独立词（避免部分匹配）
       const regex = new RegExp(`(?:^|[^a-zA-Z0-9\u4e00-\u9fff])${escapeRegex(lowerName)}(?:[^a-zA-Z0-9\u4e00-\u9fff]|$)`, 'i')
       if (regex.test(text)) {
         return { isMatch: true, confidence: 0.9, matchedName: name }
       }
-      // 部分匹配但置信度较低
       return { isMatch: true, confidence: 0.6, matchedName: name }
     }
   }
@@ -475,17 +368,15 @@ function escapeRegex(str: string): string {
 // ==================== 去重层 (Deduplicate) ====================
 
 /**
- * 内容指纹 - 用于去重
+ * 内容指纹
  */
 export function contentFingerprint(text: string): string {
-  // 取前 200 个字符的简化版本作为指纹
   const normalized = text
     .toLowerCase()
     .replace(/\s+/g, ' ')
     .replace(/[^\u4e00-\u9fff\w]/g, '')
     .slice(0, 200)
   
-  // 简单 hash
   let hash = 0
   for (let i = 0; i < normalized.length; i++) {
     const char = normalized.charCodeAt(i)
@@ -496,7 +387,7 @@ export function contentFingerprint(text: string): string {
 }
 
 /**
- * 标题相似度 - 用于去重
+ * 标题相似度
  */
 export function titleSimilarity(a: string, b: string): number {
   const normalize = (s: string) => s.toLowerCase().replace(/[^\w\u4e00-\u9fff]/g, '')
@@ -506,7 +397,6 @@ export function titleSimilarity(a: string, b: string): number {
   if (na === nb) return 1
   if (na.includes(nb) || nb.includes(na)) return 0.8
   
-  // Jaccard 相似度
   const setA = new Set(na)
   const setB = new Set(nb)
   const intersection = new Set([...setA].filter(x => setB.has(x)))
@@ -532,30 +422,25 @@ const INVEST_KEYWORDS = [
 export function isInvestmentRelated(text: string): boolean {
   const lower = text.toLowerCase()
   const matches = INVEST_KEYWORDS.filter(kw => lower.includes(kw.toLowerCase()))
-  return matches.length >= 2 // 至少匹配 2 个关键词
+  return matches.length >= 2
 }
 
 // ==================== 旧函数兼容 ====================
 
-// 保留旧函数签名但用新实现
 export async function fetchYouTubeChannel(channelId: string, apiKey: string, since: Date) {
   if (channelId.startsWith('PLACEHOLDER_')) {
     return []
   }
-  // 用搜索代替直接频道抓取
   return discoverViaYouTube(`channel:${channelId}`, apiKey, since)
 }
 
 export async function fetchRSSFeed(feedUrl: string, expertName: string, since: Date) {
-  // 旧函数不再使用，返回空
   console.log(`[Deprecated] fetchRSSFeed called for ${feedUrl}, using discovery instead`)
   return []
 }
 
 export async function fetchNewsAPI(query: string, newsApiKey: string, since: Date, language?: string) {
-  // 旧函数不再使用，返回空
-  console.log(`[Deprecated] fetchNewsAPI called, using discovery instead`)
-  return []
+  return discoverViaNewsAPI(query, newsApiKey, since, language)
 }
 
 export async function fetchBraveSearch(query: string, braveKey: string) {
@@ -565,18 +450,15 @@ export async function fetchBraveSearch(query: string, braveKey: string) {
 }
 
 export async function fetchOpenCollectionSources(since: Date): Promise<any[]> {
-  // 旧函数不再使用
   return []
 }
 
 export async function identifyExpertInContent(contentText: string, experts: any[], kimiKey: string) {
-  // 用简化识别代替 Kimi
   const results: Array<{ name: string; confidence: number; quotedText: string; reasoning: string }> = []
   
   for (const expert of experts) {
     const { isMatch, confidence, matchedName } = identifyExpertInContentSimple(contentText, expert)
     if (isMatch) {
-      // 提取引用文本（专家名字前后 200 字符）
       const idx = contentText.toLowerCase().indexOf(matchedName.toLowerCase())
       const start = Math.max(0, idx - 200)
       const end = Math.min(contentText.length, idx + 200)
