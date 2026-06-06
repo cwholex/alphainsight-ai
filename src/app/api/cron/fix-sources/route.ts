@@ -9,7 +9,13 @@ import { successResponse, errorResponse } from '@/lib/api-helpers'
  */
 export async function GET(req: Request) {
   const cronSecret = req.headers.get('x-cron-secret')
-  if (cronSecret !== process.env.CRON_SECRET) {
+  const adminPassword = req.headers.get('x-admin-password')
+  
+  // 优先使用 CRON_SECRET，如果没有则使用 admin 密码
+  const isAuthorized = cronSecret === process.env.CRON_SECRET || 
+    adminPassword === process.env.ADMIN_PASSWORD
+  
+  if (!isAuthorized) {
     return errorResponse('Unauthorized', 401)
   }
 
