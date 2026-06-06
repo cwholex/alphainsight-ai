@@ -167,16 +167,12 @@ const INITIAL_EXPERTS = [
 // 开放式收集源 - 通用财经媒体，不绑定特定专家
 // 从这些源抓取的内容会经过 Kimi 专家识别，自动关联到对应专家
 const OPEN_COLLECTION_SOURCES = [
-  // Bloomberg
+  // Bloomberg - 确认可用
   { type: 'rss_feed', identifier: 'https://feeds.bloomberg.com/markets/news.rss', name: 'Bloomberg Markets', region: 'global' },
   { type: 'rss_feed', identifier: 'https://feeds.bloomberg.com/news/economy.rss', name: 'Bloomberg Economy', region: 'global' },
   // SCMP
   { type: 'rss_feed', identifier: 'https://www.scmp.com/rss/318198/feed', name: 'SCMP Business', region: 'hk' },
   { type: 'rss_feed', identifier: 'https://www.scmp.com/rss/318200/feed', name: 'SCMP Markets', region: 'hk' },
-  // 财新
-  { type: 'rss_feed', identifier: 'https://weekly.caixin.com/rss.xml', name: '财新周刊', region: 'cn' },
-  // 新浪财经港股
-  { type: 'rss_feed', identifier: 'https://finance.sina.com.cn/stock/hkstock/ggscyd/rss.xml', name: '新浪财经港股', region: 'hk' },
   // Podcast
   { type: 'podcast_rss', identifier: 'https://feeds.megaphone.fm/BLM1726920077', name: 'Moving Markets (Bloomberg)', region: 'global', note: 'Bloomberg Moving Markets podcast - 可能包含多位专家观点' },
   { type: 'podcast_rss', identifier: 'https://feeds.megaphone.fm/BLM2074447575', name: 'Odd Lots (Bloomberg)', region: 'global', note: 'Bloomberg Odd Lots podcast' },
