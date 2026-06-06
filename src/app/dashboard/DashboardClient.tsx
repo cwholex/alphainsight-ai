@@ -17,6 +17,7 @@ export default function DashboardPage() {
   const [technical, setTechnical] = useState<any[]>([])
   const [rebalancing, setRebalancing] = useState<any[]>([])
   const [loading, setLoading] = useState(true)
+  const [error, setError] = useState<string | null>(null)
 
   useEffect(() => {
     async function loadData() {
@@ -34,8 +35,9 @@ export default function DashboardPage() {
         setHoldings(holdingsRes.data || [])
         setTechnical(technicalRes.data || [])
         setRebalancing(rebalancingRes.data || [])
-      } catch (e) {
+      } catch (e: any) {
         console.error('Failed to load data:', e)
+        setError(e.message || 'Unknown error')
       } finally {
         setLoading(false)
       }
@@ -52,6 +54,14 @@ export default function DashboardPage() {
     return (
       <div className="min-h-screen bg-[#0A0F1E] flex items-center justify-center">
         <div className="text-white">加载中...</div>
+      </div>
+    )
+  }
+
+  if (error) {
+    return (
+      <div className="min-h-screen bg-[#0A0F1E] flex items-center justify-center">
+        <div className="text-[#EF4444]">错误: {error}</div>
       </div>
     )
   }
