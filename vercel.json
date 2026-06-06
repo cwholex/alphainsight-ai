@@ -1,0 +1,23 @@
+{
+  "version": 2,
+  "builds": [
+    {
+      "src": "package.json",
+      "use": "@vercel/next"
+    }
+  ],
+  "crons": [
+    {
+      "path": "/api/cron/fetch-signals",
+      "schedule": "0 8 * * *"
+    },
+    {
+      "path": "/api/cron/update-prices",
+      "schedule": "0 */4 * * *"
+    },
+    {
+      "path": "/api/cron/calculate-rebalancing",
+      "schedule": "0 9 * * 1"
+    }
+  ]
+}

@@ -1,0 +1,246 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+model Expert {
+  id                  String   @id @default(cuid())
+  name                String   @unique
+  nameEn              String?
+  title               String?
+  institution         String?
+  isActive            Boolean  @default(true)
+  credibilityScore    Float    @default(0.5)
+  initialWeight       Float    @default(1)
+  contrarianMode      Boolean  @default(false)
+  communicationStyle  String   @default("fundamental_analyst")
+  specialtySectors    String[] @default([])
+  biasProfile         Json?
+  contentSources      Json?
+  aliases             String[] @default([])
+  calibration         Json?
+  createdAt           DateTime @default(now())
+  updatedAt           DateTime @updatedAt
+
+  signals             Signal[]
+  calibrationLogs     ExpertCalibrationLog[]
+
+  @@map("experts")
+}
+
+model Signal {
+  id                       String   @id @default(cuid())
+  expertId                 String
+  expert                   Expert   @relation(fields: [expertId], references: [id])
+
+  etfCode                  String?
+  etfTickers               String[] @default([])
+  sentimentDirection       String   @default("neutral")
+  rawSentiment             Float    @default(0)
+  normalizedSentiment      Float?
+  isCalibrated             Boolean  @default(false)
+  confidenceScore          Float    @default(0)
+  convictionScore          Int      @default(5)
+  timeHorizon              String   @default("1m")
+  thesisType               String   @default("macro")
+  hedgingLevel             Int      @default(3)
+  emotionalTone            String   @default("neutral")
+  specificity              Int      @default(5)
+  themes                   Json?
+  extractedClaims          String[] @default([])
+  supportingEvidence       String[] @default([])
+  sourcePlatform           String   @default("news")
+  sourceUrl                String?
+  sourceContentHash        String?
+  sourceVerificationStatus String   @default("unverified")
+  rawSummary               String?
+  isManualInjection        Boolean  @default(false)
+  injectionType            String?
+  signalTimestamp          DateTime @default(now())
+  expiresAt                DateTime
+  createdAt                DateTime @default(now())
+
+  rebalancingEvents        RebalancingEvent[] @relation("SignalToRebalancing")
+
+  @@index([expertId])
+  @@index([signalTimestamp])
+  @@index([sourceVerificationStatus])
+  @@map("signals")
+}
+
+model ETFHolding {
+  id                     String   @id @default(cuid())
+  etfCode                String   @unique
+  etfName                String
+  sector                 String?
+  subSector              String?
+  shares                 Float    @default(0)
+  currentWeight          Float    @default(0)
+  avgCostPerShare        Float    @default(0)
+  costBasis              Float    @default(0)
+  marketValue            Float    @default(0)
+  lastPrice              Float    @default(0)
+  priceSnapshotTimestamp DateTime?
+  isActive               Boolean  @default(true)
+  createdAt              DateTime @default(now())
+  updatedAt              DateTime @updatedAt
+
+  @@map("etf_holdings")
+}
+
+// 专家提到但系统尚未覆盖的 ETF/资产建议
+model SuggestedETF {
+  id                String   @id @default(cuid())
+  ticker            String
+  name              String?
+  sector            String?
+  mentionedBy       String   // 专家名字
+  expertId          String?
+  signalId          String?
+  sourceUrl         String?
+  reason            String?  // Kimi 提取的推荐理由
+  status            String   @default("pending") // pending, approved, rejected
+  similarToExisting String?  // 是否类似现有 ETF
+  approvedAt        DateTime?
+  approvedBy        String?
+  createdAt         DateTime @default(now())
+
+  @@index([status])
+  @@index([ticker])
+  @@map("suggested_etfs")
+}
+
+model RebalancingEvent {
+  id                  String   @id @default(cuid())
+  eventDate           DateTime @default(now())
+  triggerSignals      String[] @default([])
+  rebalancingActions  Json?
+  totalTurnoverRate   Float    @default(0)
+  totalEstimatedTca   Float    @default(0)
+  expectedNetReturn   Float    @default(0)
+  status              String   @default("suggested")
+  managerNotes        String?
+  createdAt           DateTime @default(now())
+
+  signals             Signal[] @relation("SignalToRebalancing")
+
+  @@map("rebalancing_events")
+}
+
+model ETFAnalytics {
+  id                   String   @id @default(cuid())
+  etfCode              String   @unique
+  calculationDate      DateTime @default(now())
+  rollingReturns90d    Float[]  @default([])
+  annualizedVolatility Float?
+  sharpeRatio90d       Float?
+  correlationWith      Json?
+  marketCapWeight      Float?
+  averageDailyVolume   Float?
+  createdAt            DateTime @default(now())
+  updatedAt            DateTime @updatedAt
+
+  @@map("etf_analytics")
+}
+
+model ThemeMapping {
+  id               String   @id @default(cuid())
+  themeName        String   @unique
+  themeDescription String?
+  parentTheme      String?
+  etfMappings      Json?
+  keywords         String[] @default([])
+  lastUpdated      DateTime @default(now())
+  createdAt        DateTime @default(now())
+
+  @@map("theme_mappings")
+}
+
+model ExpertCalibrationLog {
+  id                 String   @id @default(cuid())
+  expertId           String
+  expert             Expert   @relation(fields: [expertId], references: [id])
+  themeId            String?
+  timeHorizon        String   @default("1m")
+  signalsCount       Int      @default(0)
+  correctPredictions Int      @default(0)
+  accuracyRate       Float    @default(0)
+  calibrationFactor  Float    @default(1)
+  contrarianFactor   Float    @default(1)
+  calculatedAt       DateTime @default(now())
+
+  @@index([expertId])
+  @@map("expert_calibration_logs")
+}
+
+model TechnicalIndicator {
+  id            String   @id @default(cuid())
+  indicatorType String
+  targetEtf     String
+  value         Float
+  signal        String
+  timeframe     String   @default("daily")
+  strength      Int      @default(5)
+  description   String?
+  calculatedAt  DateTime @default(now())
+
+  @@index([indicatorType, targetEtf])
+  @@map("technical_indicators")
+}
+
+model AttributionReport {
+  id                         String   @id @default(cuid())
+  rebalancingEventId         String
+  reportDate                 DateTime @default(now())
+  triggerSignalsDetail       Json?
+  contributionAnalysis       Json?
+  transactionCostDetail      Json?
+  historicalPerformanceReview Json?
+  pdfExportUrl               String?
+  createdAt                  DateTime @default(now())
+
+  @@map("attribution_reports")
+}
+
+model ManualInjection {
+  id                   String   @id @default(cuid())
+  injectionType        String
+  inputContent         String
+  extractedText        String?
+  associatedExpertId   String?
+  associatedExpertName String?
+  associatedEtfCode    String?
+  processingStatus     String   @default("pending")
+  generatedSignalId  String?
+  processingError    String?
+  injectionTimestamp   DateTime @default(now())
+
+  @@map("manual_injections")
+}
+
+model User {
+  id        String   @id @default(cuid())
+  email     String   @unique
+  name      String?
+  role      String   @default("user")
+  password  String?
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@map("users")
+}
+
+model SystemConfig {
+  id          String   @id @default(cuid())
+  key         String   @unique
+  value       Json?
+  description String?
+  updatedAt   DateTime @updatedAt
+  createdAt   DateTime @default(now())
+
+  @@map("system_configs")
+}
