@@ -9,15 +9,28 @@ import { prisma } from '@/lib/prisma'
 export async function POST(req: Request) {
   try {
     const body = await req.json()
-    const { expertName, youtubeChannelId } = body
+    const { expertName, expertId, youtubeChannelId } = body
 
-    if (!expertName || !youtubeChannelId) {
-      return NextResponse.json({ success: false, error: 'Missing expertName or youtubeChannelId' }, { status: 400 })
+    if (!youtubeChannelId) {
+      return NextResponse.json({ success: false, error: 'Missing youtubeChannelId' }, { status: 400 })
     }
 
-    const expert = await prisma.expert.findUnique({ where: { name: expertName } })
+    let expert = null
+    if (expertId) {
+      expert = await prisma.expert.findUnique({ where: { id: expertId } })
+    } else if (expertName) {
+      expert = await prisma.expert.findFirst({ 
+        where: { 
+          OR: [
+            { name: expertName },
+            { nameEn: expertName },
+          ]
+        } 
+      })
+    }
+
     if (!expert) {
-      return NextResponse.json({ success: false, error: `Expert not found: ${expertName}` }, { status: 404 })
+      return NextResponse.json({ success: false, error: `Expert not found: ${expertName || expertId}` }, { status: 404 })
     }
 
     const sources = (expert.contentSources as any[]) || []
