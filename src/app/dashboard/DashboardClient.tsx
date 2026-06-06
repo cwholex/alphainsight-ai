@@ -1,6 +1,6 @@
 'use client'
 
-import { useState } from 'react'
+import { useState, useEffect } from 'react'
 import { useQuery } from '@tanstack/react-query'
 import PortfolioSummary from '@/components/PortfolioSummary'
 import ExpertGrid from '@/components/ExpertGrid'
@@ -12,6 +12,18 @@ import SuggestedETFPanel from '@/components/SuggestedETFPanel'
 
 export default function DashboardPage() {
   const [selectedExpert, setSelectedExpert] = useState<string | null>(null)
+  const [debugData, setDebugData] = useState<any>(null)
+
+  // Debug: test native fetch
+  useEffect(() => {
+    fetch('/api/holdings')
+      .then(r => r.json())
+      .then(d => {
+        console.log('HOLDINGS:', d)
+        setDebugData(d)
+      })
+      .catch(e => console.error('FETCH ERROR:', e))
+  }, [])
 
   const { data: experts = [] } = useQuery({
     queryKey: ['experts'],
@@ -80,6 +92,11 @@ export default function DashboardPage() {
           </div>
           <div className="flex items-center gap-3">
             <span className="text-[#7A8FA6] text-xs">专家校准的语义投资组合智能</span>
+            {debugData && (
+              <span className="text-[#10B981] text-xs">
+                API: {debugData.data?.length || 0} ETFs
+              </span>
+            )}
           </div>
         </div>
       </header>
