@@ -104,14 +104,26 @@ export async function discoverViaBingNews(query: string, since: Date): Promise<A
         }
       }
       
-      // 清理 Bing 重定向 URL
+      // 清理 Bing 重定向 URL - 跟随重定向获取真实 URL
       let cleanUrl = link
-      if (link.includes('bing.com') && link.includes('url=')) {
-        const urlMatch = link.match(/[?&]url=([^&]+)/)
-        if (urlMatch) {
-          try {
-            cleanUrl = decodeURIComponent(urlMatch[1])
-          } catch { /* keep original */ }
+      if (link.includes('bing.com/news/apiclick.aspx') || link.includes('bing.com/news/search')) {
+        try {
+          // 尝试跟随重定向
+          const headRes = await fetch(link, { method: 'HEAD', redirect: 'manual' })
+          if (headRes.status === 302 || headRes.status === 301) {
+            const location = headRes.headers.get('location')
+            if (location) {
+              cleanUrl = location
+            }
+          }
+        } catch {
+          // 如果 HEAD 失败，尝试从 URL 参数解码
+          const urlMatch = link.match(/[?&]url=([^&]+)/)
+          if (urlMatch) {
+            try {
+              cleanUrl = decodeURIComponent(urlMatch[1])
+            } catch { /* keep original */ }
+          }
         }
       }
       
@@ -156,11 +168,25 @@ export async function discoverViaGoogleNews(query: string, since: Date): Promise
       
       if (!link || !title) continue
       
-      // Google News 链接是重定向的，需要解码
+      // Google News 链接解码
       let cleanUrl = link
       if (link.startsWith('https://news.google.com/rss/articles/')) {
-        // Google News 使用 base64 编码的 URL，跳过这些
-        continue
+        // Google News 编码链接 - 尝试解码
+        try {
+          const articleId = link.replace('https://news.google.com/rss/articles/', '')
+          // Google 使用 base64 编码，解码后得到真实 URL
+          const decoded = Buffer.from(articleId, 'base64').toString('utf-8')
+          // 解码后的格式通常是: {URL}
+          const urlMatch = decoded.match(/https?:\/\/[^\x00-\x1f]+/)
+          if (urlMatch) {
+            cleanUrl = urlMatch[0].replace(/\x00/g, '').trim()
+          } else {
+            // 如果解码失败，跳过这个链接
+            continue
+          }
+        } catch {
+          continue
+        }
       }
       
       let publishedAt: Date | null = null
@@ -326,13 +352,41 @@ export async function fetchPageContent(url: string): Promise<{title: string; con
       }
     }
     
-    // 策略 4: 提取 body 中所有段落
+    // 策略 4: 提取 body 中所有段落和 div 文本块
     if (!content || content.length < 500) {
       const bodyMatch = html.match(/<body[^>]*>([\s\S]*?)<\/body>/i)
       if (bodyMatch) {
-        // 只提取 p 标签内容
-        const pMatches = [...bodyMatch[1].matchAll(/<p[^>]*>([\s\S]*?)<\/p>/gi)]
-        content = pMatches.map(m => htmlToText(m[1])).filter(t => t.length > 20).join('\n\n')
+        const body = bodyMatch[1]
+        // 提取 p 标签
+        const pMatches = [...body.matchAll(/<p[^>]*>([\s\S]*?)<\/p>/gi)]
+        const pText = pMatches.map(m => htmlToText(m[1])).filter(t => t.length > 20).join('\n\n')
+        
+        // 提取 div 中的文本块（可能是文章段落）
+        const divMatches = [...body.matchAll(/<div[^>]*>([\s\S]*?)<\/div>/gi)]
+        const divText = divMatches
+          .map(m => htmlToText(m[1]))
+          .filter(t => t.length > 50 && t.length < 2000) // 合理的段落长度
+          .join('\n\n')
+        
+        // 选择更长的内容
+        content = pText.length > divText.length ? pText : divText
+        
+        // 如果还是不够，提取所有文本
+        if (content.length < 500) {
+          content = htmlToText(body)
+        }
+      }
+    }
+    
+    // 策略 5: 提取 section 标签
+    if (!content || content.length < 500) {
+      const sectionMatches = [...html.matchAll(/<section[^>]*>([\s\S]*?)<\/section>/gi)]
+      const sectionText = sectionMatches
+        .map(m => htmlToText(m[1]))
+        .filter(t => t.length > 100)
+        .join('\n\n')
+      if (sectionText.length > content.length) {
+        content = sectionText
       }
     }
     
