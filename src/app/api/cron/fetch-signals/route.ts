@@ -113,7 +113,16 @@ async function callKimi(messages: any[], kimiKey: string) {
  */
 export async function GET(req: Request) {
   const cronSecret = req.headers.get('x-cron-secret')
-  if (cronSecret !== process.env.CRON_SECRET) {
+  const envCronSecret = process.env.CRON_SECRET || ''
+  
+  // 诊断日志
+  console.log('[Auth] Header secret length:', cronSecret?.length || 0)
+  console.log('[Auth] Env secret length:', envCronSecret.length)
+  console.log('[Auth] Header first 10:', cronSecret?.slice(0, 10))
+  console.log('[Auth] Env first 10:', envCronSecret.slice(0, 10))
+  console.log('[Auth] Match:', cronSecret === envCronSecret)
+  
+  if (cronSecret !== envCronSecret) {
     return errorResponse('Unauthorized', 401)
   }
 
