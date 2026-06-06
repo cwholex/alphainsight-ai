@@ -20,6 +20,7 @@ export default function DashboardPage() {
       const data = await res.json()
       return data.data || []
     },
+    refetchOnMount: 'always',
   })
 
   const { data: signals = [] } = useQuery({
@@ -29,6 +30,7 @@ export default function DashboardPage() {
       const data = await res.json()
       return data.data || []
     },
+    refetchOnMount: 'always',
   })
 
   const { data: holdings = [] } = useQuery({
@@ -38,6 +40,7 @@ export default function DashboardPage() {
       const data = await res.json()
       return data.data || []
     },
+    refetchOnMount: 'always',
   })
 
   const { data: technical = [] } = useQuery({
@@ -47,6 +50,7 @@ export default function DashboardPage() {
       const data = await res.json()
       return data.data || []
     },
+    refetchOnMount: 'always',
   })
 
   const { data: rebalancing = [] } = useQuery({
@@ -56,6 +60,7 @@ export default function DashboardPage() {
       const data = await res.json()
       return data.data || []
     },
+    refetchOnMount: 'always',
   })
 
   const filteredSignals = selectedExpert
