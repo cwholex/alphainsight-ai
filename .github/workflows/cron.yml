@@ -1,0 +1,33 @@
+name: AlphaInsight Cron Jobs
+
+on:
+  schedule:
+    - cron: '0 8 * * *'      # 每天 08:00 UTC 抓取信号
+    - cron: '0 */4 * * *'    # 每 4 小时更新价格
+    - cron: '0 9 * * 1'      # 每周一 09:00 UTC 计算调仓
+  workflow_dispatch:         # 支持手动触发
+
+jobs:
+  fetch-signals:
+    if: github.event.schedule == '0 8 * * *' || github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Fetch Signals
+        run: |
+          curl -s "https://alphainsight-ai.onrender.com/api/cron/fetch-signals?secret=${{ secrets.CRON_SECRET }}" || echo "Fetch signals failed"
+
+  update-prices:
+    if: github.event.schedule == '0 */4 * * *' || github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Update Prices
+        run: |
+          curl -s "https://alphainsight-ai.onrender.com/api/cron/update-prices?secret=${{ secrets.CRON_SECRET }}" || echo "Update prices failed"
+
+  calculate-rebalancing:
+    if: github.event.schedule == '0 9 * * 1' || github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Calculate Rebalancing
+        run: |
+          curl -s "https://alphainsight-ai.onrender.com/api/cron/calculate-rebalancing?secret=${{ secrets.CRON_SECRET }}" || echo "Calculate rebalancing failed"
