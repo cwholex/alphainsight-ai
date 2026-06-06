@@ -17,32 +17,25 @@ export default function DashboardPage() {
   const [technical, setTechnical] = useState<any[]>([])
   const [rebalancing, setRebalancing] = useState<any[]>([])
   const [loading, setLoading] = useState(true)
-  const [error, setError] = useState<string | null>(null)
-  const [debugInfo, setDebugInfo] = useState<string>('')
 
   useEffect(() => {
     async function loadData() {
       try {
-        const holdingsRes = await fetch('/api/holdings')
-        const holdingsData = await holdingsRes.json()
-        setDebugInfo(`Status: ${holdingsRes.status}, Data: ${holdingsData.data?.length || 0} items`)
-        
-        const [expertsRes, signalsRes, technicalRes, rebalancingRes] = await Promise.all([
+        const [expertsRes, signalsRes, holdingsRes, technicalRes, rebalancingRes] = await Promise.all([
           fetch('/api/experts').then(r => r.json()),
           fetch('/api/signals').then(r => r.json()),
+          fetch('/api/holdings').then(r => r.json()),
           fetch('/api/technical').then(r => r.json()),
           fetch('/api/rebalancing').then(r => r.json()),
         ])
 
         setExperts(expertsRes.data || [])
         setSignals(signalsRes.data || [])
-        setHoldings(holdingsData.data || [])
+        setHoldings(holdingsRes.data || [])
         setTechnical(technicalRes.data || [])
         setRebalancing(rebalancingRes.data || [])
-      } catch (e: any) {
+      } catch (e) {
         console.error('Failed to load data:', e)
-        setError(e.message || 'Unknown error')
-        setDebugInfo(`Error: ${e.message}`)
       } finally {
         setLoading(false)
       }
@@ -63,14 +56,6 @@ export default function DashboardPage() {
     )
   }
 
-  if (error) {
-    return (
-      <div className="min-h-screen bg-[#0A0F1E] flex items-center justify-center">
-        <div className="text-[#EF4444]">错误: {error}</div>
-      </div>
-    )
-  }
-
   return (
     <div className="min-h-screen bg-[#0A0F1E]">
       {/* Header */}
@@ -84,11 +69,6 @@ export default function DashboardPage() {
           </div>
           <div className="flex items-center gap-3">
             <span className="text-[#7A8FA6] text-xs">专家校准的语义投资组合智能</span>
-            {debugInfo && (
-              <span className="text-[#F59E0B] text-xs font-mono">
-                {debugInfo}
-              </span>
-            )}
           </div>
         </div>
       </header>
