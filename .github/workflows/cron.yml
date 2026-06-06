@@ -14,7 +14,8 @@ jobs:
     steps:
       - name: Fetch Signals
         run: |
-          curl -s "https://alphainsight-ai.onrender.com/api/cron/fetch-signals?secret=${{ secrets.CRON_SECRET }}" || echo "Fetch signals failed"
+          curl -s -H "x-cron-secret: ${{ secrets.CRON_SECRET }}" \
+            "https://alphainsight-ai.onrender.com/api/cron/fetch-signals" || echo "Fetch signals failed"
 
   update-prices:
     if: github.event.schedule == '0 */4 * * *' || github.event_name == 'workflow_dispatch'
@@ -22,7 +23,8 @@ jobs:
     steps:
       - name: Update Prices
         run: |
-          curl -s "https://alphainsight-ai.onrender.com/api/cron/update-prices?secret=${{ secrets.CRON_SECRET }}" || echo "Update prices failed"
+          curl -s -H "x-cron-secret: ${{ secrets.CRON_SECRET }}" \
+            "https://alphainsight-ai.onrender.com/api/cron/update-prices" || echo "Update prices failed"
 
   calculate-rebalancing:
     if: github.event.schedule == '0 9 * * 1' || github.event_name == 'workflow_dispatch'
@@ -30,4 +32,5 @@ jobs:
     steps:
       - name: Calculate Rebalancing
         run: |
-          curl -s "https://alphainsight-ai.onrender.com/api/cron/calculate-rebalancing?secret=${{ secrets.CRON_SECRET }}" || echo "Calculate rebalancing failed"
+          curl -s -H "x-cron-secret: ${{ secrets.CRON_SECRET }}" \
+            "https://alphainsight-ai.onrender.com/api/cron/calculate-rebalancing" || echo "Calculate rebalancing failed"
