@@ -173,10 +173,10 @@ const OPEN_COLLECTION_SOURCES = [
   // SCMP
   { type: 'rss_feed', identifier: 'https://www.scmp.com/rss/318198/feed', name: 'SCMP Business', region: 'hk' },
   { type: 'rss_feed', identifier: 'https://www.scmp.com/rss/318200/feed', name: 'SCMP Markets', region: 'hk' },
-  // 香港报章
-  { type: 'rss_feed', identifier: 'https://www.hkej.com/rss/feed.xml', name: '信报财经', region: 'hk' },
-  { type: 'rss_feed', identifier: 'https://news.mingpao.com/rss/pns/section/0003/feed.xml', name: '明报财经', region: 'hk' },
-  { type: 'rss_feed', identifier: 'https://www.etnet.com.hk/www/tc/news/rss.php', name: '经济日报', region: 'hk' },
+  // 财新
+  { type: 'rss_feed', identifier: 'https://weekly.caixin.com/rss.xml', name: '财新周刊', region: 'cn' },
+  // 新浪财经港股
+  { type: 'rss_feed', identifier: 'https://finance.sina.com.cn/stock/hkstock/ggscyd/rss.xml', name: '新浪财经港股', region: 'hk' },
   // Podcast
   { type: 'podcast_rss', identifier: 'https://feeds.megaphone.fm/BLM1726920077', name: 'Moving Markets (Bloomberg)', region: 'global', note: 'Bloomberg Moving Markets podcast - 可能包含多位专家观点' },
   { type: 'podcast_rss', identifier: 'https://feeds.megaphone.fm/BLM2074447575', name: 'Odd Lots (Bloomberg)', region: 'global', note: 'Bloomberg Odd Lots podcast' },

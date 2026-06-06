@@ -45,10 +45,10 @@ export const OPEN_COLLECTION_SOURCES = [
   // SCMP
   { type: 'rss_feed' as const, identifier: 'https://www.scmp.com/rss/318198/feed', name: 'SCMP Business', region: 'hk' },
   { type: 'rss_feed' as const, identifier: 'https://www.scmp.com/rss/318200/feed', name: 'SCMP Markets', region: 'hk' },
-  // 香港报章
-  { type: 'rss_feed' as const, identifier: 'https://www.hkej.com/rss/feed.xml', name: '信报财经', region: 'hk' },
-  { type: 'rss_feed' as const, identifier: 'https://news.mingpao.com/rss/pns/section/0003/feed.xml', name: '明报财经', region: 'hk' },
-  { type: 'rss_feed' as const, identifier: 'https://www.etnet.com.hk/www/tc/news/rss.php', name: '经济日报', region: 'hk' },
+  // 财新
+  { type: 'rss_feed' as const, identifier: 'https://weekly.caixin.com/rss.xml', name: '财新周刊', region: 'cn' },
+  // 新浪财经
+  { type: 'rss_feed' as const, identifier: 'https://finance.sina.com.cn/stock/hkstock/ggscyd/rss.xml', name: '新浪财经港股', region: 'hk' },
   // Podcast
   { type: 'podcast_rss' as const, identifier: 'https://feeds.megaphone.fm/BLM1726920077', name: 'Moving Markets (Bloomberg)', region: 'global', note: 'Bloomberg Moving Markets podcast - 可能包含多位专家观点' },
   { type: 'podcast_rss' as const, identifier: 'https://feeds.megaphone.fm/BLM2074447575', name: 'Odd Lots (Bloomberg)', region: 'global', note: 'Bloomberg Odd Lots podcast' },
@@ -244,12 +244,13 @@ export async function fetchBraveSearch(query: string, braveKey: string) {
   }
 }
 
-export async function fetchNewsAPI(query: string, newsApiKey: string, since: Date) {
+export async function fetchNewsAPI(query: string, newsApiKey: string, since: Date, language: string = 'en') {
   const results: any[] = []
   try {
     const fromDate = since.toISOString().split('T')[0]
+    const langParam = language ? `&language=${language}` : ''
     const res = await withTimeout(fetch(
-      `https://newsapi.org/v2/everything?q=${encodeURIComponent(query)}&from=${fromDate}&sortBy=publishedAt&language=en&pageSize=10&apiKey=${newsApiKey}`
+      `https://newsapi.org/v2/everything?q=${encodeURIComponent(query)}&from=${fromDate}&sortBy=publishedAt&pageSize=10${langParam}&apiKey=${newsApiKey}`
     ), FETCH_TIMEOUT_MS)
     const data = await res.json()
 

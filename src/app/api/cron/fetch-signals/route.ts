@@ -9,6 +9,7 @@ import {
   identifyExpertInContent,
   fetchPageContent,
   isBlacklistedExpert,
+  filterInvestmentRelevance,
 } from '@/lib/content-fetcher'
 import { successResponse, errorResponse } from '@/lib/api-helpers'
 
@@ -333,28 +334,35 @@ export async function GET(req: Request) {
               break
             case 'news_api':
               if (NEWSAPI_KEY) {
-                items = await fetchNewsAPI(source.identifier, NEWSAPI_KEY, since)
-                console.log(`[${expert.name}] NewsAPI: ${items.length} items`)
+                // 根据专家名字判断语言：中文专家用中文搜索
+                const isChineseExpert = /[\u4e00-\u9fff]/.test(expert.name)
+                const lang = isChineseExpert ? 'zh' : 'en'
+                items = await fetchNewsAPI(source.identifier, NEWSAPI_KEY, since, lang)
+                console.log(`[${expert.name}] NewsAPI (lang=${lang}): ${items.length} items`)
               }
               break
             case 'brave_search':
               if (BRAVE_KEY) {
                 const searchResults = await fetchBraveSearch(source.identifier, BRAVE_KEY)
                 // Brave Search 返回的是搜索结果，需要获取页面内容
-                for (const result of searchResults) {
-                  const pageContent = await fetchPageContent(result.url)
-                  if (pageContent) {
-                    const relevance = require('@/lib/content-fetcher').filterInvestmentRelevance(pageContent)
-                    if (relevance.pass) {
-                      items.push({
-                        sourceType: 'brave_search',
-                        sourceUrl: result.url,
-                        contentText: pageContent,
-                        publishedAt: new Date(),
-                        title: result.title,
-                        verificationStatus: 'unverified',
-                      })
+                for (const result of searchResults.slice(0, 3)) { // 限制前3个结果
+                  try {
+                    const pageContent = await fetchPageContent(result.url)
+                    if (pageContent) {
+                      const relevance = filterInvestmentRelevance(pageContent)
+                      if (relevance.pass) {
+                        items.push({
+                          sourceType: 'brave_search',
+                          sourceUrl: result.url,
+                          contentText: pageContent,
+                          publishedAt: new Date(),
+                          title: result.title,
+                          verificationStatus: 'unverified',
+                        })
+                      }
                     }
+                  } catch (err) {
+                    console.log(`[${expert.name}] Brave page fetch failed: ${result.url}`)
                   }
                 }
                 console.log(`[${expert.name}] Brave Search: ${items.length} items`)
