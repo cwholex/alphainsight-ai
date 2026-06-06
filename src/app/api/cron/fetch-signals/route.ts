@@ -103,7 +103,7 @@ async function callKimi(messages: any[], kimiKey: string) {
 
 /**
  * 主抓取流程 - 新架构
- * 1. 发现内容 (Bing News + Google News + Brave Search + YouTube)
+ * 1. 发现内容 (Brave Search + NewsAPI + YouTube)
  * 2. 去重
  * 3. 抓取网页全文
  * 4. 识别专家
@@ -201,20 +201,7 @@ export async function GET(req: Request) {
         }
       }
 
-      // 1c. Brave Search
-      if (BRAVE_KEY) {
-        for (const query of searchQueries.slice(0, 1)) {
-          try {
-            const items = await discoverViaBraveSearch(query, BRAVE_KEY, since)
-            discoveredItems.push(...items)
-            console.log(`[${expert.name}] Brave Search "${query}": ${items.length} items`)
-          } catch (err) {
-            console.error(`[${expert.name}] Brave Search error:`, (err as Error).message)
-          }
-        }
-      }
-
-      // 1d. YouTube 搜索
+      // 1c. YouTube 搜索
       if (YOUTUBE_KEY) {
         for (const query of searchQueries.slice(0, 1)) {
           try {
