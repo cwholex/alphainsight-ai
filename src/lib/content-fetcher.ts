@@ -1,415 +1,587 @@
-const FETCH_TIMEOUT_MS = 12000
-const EXPERT_BLACKLIST = ['許佳龍', '许佳龙']
+const FETCH_TIMEOUT_MS = 15000
+const MAX_RETRIES = 3
+const RETRY_DELAY_MS = 2000
 
-const EDUCATIONAL_DOMAIN_BLACKLIST = [
-  'hkex.com.hk', 'hangseng.com', 'hsbc.com.hk', 'boc.hk', 'dbs.com.hk',
-  'sc.com.hk', 'bankofchina.com', 'icbc.com.cn', 'ccb.com', 'abchina.com',
+// User-Agent 轮换 - 参考 finnews 反爬虫策略
+const USER_AGENTS = [
+  'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+  'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+  'Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+  'Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:121.0) Gecko/20100101 Firefox/121.0',
 ]
 
-const EDUCATIONAL_PATH_PATTERNS = [
-  '/personal/investment/', '/wealth-management/', '/investment-guide/',
-  '/etf-guide/', '/market-data/', '/securities-prices/', '/trading-guide/',
-  '/investor-education/', '/learning-center/', '/faq/', '/help/',
-  '/us-stock-etf-guide/',
-]
+function getRandomUserAgent(): string {
+  return USER_AGENTS[Math.floor(Math.random() * USER_AGENTS.length)]
+}
 
-const EDUCATIONAL_CONTENT_PATTERNS = [
-  'ETF 的两种类型', '被动型 ETF', '主动型 ETF', 'ETF 基础知识',
-  '交易所买卖基金', '追踪指数', '跑赢大市', '主动管理基金',
-  '被动管理基金', 'ETF 费用比率', 'ETF 管理费', '证监会认可',
-  '集体投资计划', '全方位财富管理', '财富管理服务',
-  '证券及期货事务监察委员会',
-]
+// 指数退避重试 - 参考 finnews
+async function fetchWithRetry(url: string, options: RequestInit = {}, retries = MAX_RETRIES): Promise<Response> {
+  let lastError: Error | null = null
+  
+  for (let attempt = 0; attempt <= retries; attempt++) {
+    try {
+      const controller = new AbortController()
+      const timeoutId = setTimeout(() => controller.abort(), FETCH_TIMEOUT_MS)
+      
+      const res = await fetch(url, {
+        ...options,
+        signal: controller.signal,
+        headers: {
+          'User-Agent': getRandomUserAgent(),
+          'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
+          'Accept-Language': 'zh-CN,zh;q=0.9,en;q=0.8',
+          'Accept-Encoding': 'gzip, deflate, br',
+          'Connection': 'keep-alive',
+          ...options.headers,
+        },
+      })
+      
+      clearTimeout(timeoutId)
+      
+      if (res.status === 429 || res.status === 403) {
+        // 被限流，等待后重试
+        const delay = RETRY_DELAY_MS * Math.pow(2, attempt)
+        console.log(`[Retry] ${url} status ${res.status}, waiting ${delay}ms (attempt ${attempt + 1}/${retries + 1})`)
+        await new Promise(r => setTimeout(r, delay))
+        continue
+      }
+      
+      return res
+    } catch (err) {
+      lastError = err as Error
+      if (attempt < retries) {
+        const delay = RETRY_DELAY_MS * Math.pow(2, attempt)
+        console.log(`[Retry] ${url} error: ${lastError.message}, waiting ${delay}ms (attempt ${attempt + 1}/${retries + 1})`)
+        await new Promise(r => setTimeout(r, delay))
+      }
+    }
+  }
+  
+  throw lastError || new Error(`Failed to fetch ${url} after ${retries + 1} attempts`)
+}
 
-const INVEST_ACTION_KW = [
+// ==================== 内容发现层 (Discovery) ====================
+
+/**
+ * 通过 Bing News RSS 搜索内容 - 参考 Universal-News-Scraper
+ * 不需要知道具体 RSS URL，用搜索引擎自动发现
+ */
+export async function discoverViaBingNews(query: string, since: Date): Promise<Array<{url: string; title: string; source: string; publishedAt: Date | null}>> {
+  const results: Array<{url: string; title: string; source: string; publishedAt: Date | null}> = []
+  
+  try {
+    // Bing News RSS - 免费，不需要 API key
+    const bingUrl = `https://www.bing.com/news/search?q=${encodeURIComponent(query)}&format=rss`
+    const res = await fetchWithRetry(bingUrl, {}, 1)
+    const text = await res.text()
+    
+    // 解析 RSS
+    const itemRegex = /<item[^>]*>([\s\S]*?)<\/item>/gi
+    const items = [...text.matchAll(itemRegex)]
+    
+    for (const match of items.slice(0, 10)) {
+      const xml = match[1]
+      
+      const getTag = (tag: string) => {
+        const m = xml.match(new RegExp(`<${tag}[^>]*>(?:<!\[CDATA\[)?([\s\S]*?)(?:\]\]>)?<\/${tag}>`, 'i'))
+        return m ? m[1].trim() : ''
+      }
+      
+      const title = getTag('title')
+      const link = getTag('link')
+      const pubDate = getTag('pubDate')
+      const source = getTag('source') || 'Bing News'
+      
+      if (!link || !title) continue
+      
+      // 检查日期
+      let publishedAt: Date | null = null
+      if (pubDate) {
+        const d = new Date(pubDate)
+        if (!isNaN(d.getTime())) {
+          if (d < since) continue
+          publishedAt = d
+        }
+      }
+      
+      // 清理 Bing 重定向 URL
+      let cleanUrl = link
+      if (link.includes('bing.com') && link.includes('url=')) {
+        const urlMatch = link.match(/[?&]url=([^&]+)/)
+        if (urlMatch) {
+          try {
+            cleanUrl = decodeURIComponent(urlMatch[1])
+          } catch { /* keep original */ }
+        }
+      }
+      
+      results.push({ url: cleanUrl, title, source: `Bing:${source}`, publishedAt })
+    }
+    
+    console.log(`[BingNews] "${query}": ${results.length} results`)
+  } catch (err) {
+    console.error(`[BingNews] Error for "${query}":`, (err as Error).message)
+  }
+  
+  return results
+}
+
+/**
+ * 通过 Google News RSS 搜索内容
+ */
+export async function discoverViaGoogleNews(query: string, since: Date): Promise<Array<{url: string; title: string; source: string; publishedAt: Date | null}>> {
+  const results: Array<{url: string; title: string; source: string; publishedAt: Date | null}> = []
+  
+  try {
+    // Google News RSS - 免费，不需要 API key
+    const googleUrl = `https://news.google.com/rss/search?q=${encodeURIComponent(query)}&hl=zh-HK&gl=HK&ceid=HK:zh-Hant`
+    const res = await fetchWithRetry(googleUrl, {}, 1)
+    const text = await res.text()
+    
+    const itemRegex = /<item[^>]*>([\s\S]*?)<\/item>/gi
+    const items = [...text.matchAll(itemRegex)]
+    
+    for (const match of items.slice(0, 10)) {
+      const xml = match[1]
+      
+      const getTag = (tag: string) => {
+        const m = xml.match(new RegExp(`<${tag}[^>]*>(?:<!\[CDATA\[)?([\s\S]*?)(?:\]\]>)?<\/${tag}>`, 'i'))
+        return m ? m[1].trim() : ''
+      }
+      
+      const title = getTag('title')
+      const link = getTag('link')
+      const pubDate = getTag('pubDate')
+      const source = getTag('source') || 'Google News'
+      
+      if (!link || !title) continue
+      
+      // Google News 链接是重定向的，需要解码
+      let cleanUrl = link
+      if (link.startsWith('https://news.google.com/rss/articles/')) {
+        // Google News 使用 base64 编码的 URL，跳过这些
+        continue
+      }
+      
+      let publishedAt: Date | null = null
+      if (pubDate) {
+        const d = new Date(pubDate)
+        if (!isNaN(d.getTime())) {
+          if (d < since) continue
+          publishedAt = d
+        }
+      }
+      
+      results.push({ url: cleanUrl, title, source: `Google:${source}`, publishedAt })
+    }
+    
+    console.log(`[GoogleNews] "${query}": ${results.length} results`)
+  } catch (err) {
+    console.error(`[GoogleNews] Error for "${query}":`, (err as Error).message)
+  }
+  
+  return results
+}
+
+/**
+ * 通过 Brave Search API 搜索内容
+ */
+export async function discoverViaBraveSearch(query: string, braveKey: string, since: Date): Promise<Array<{url: string; title: string; source: string; publishedAt: Date | null; description: string}>> {
+  const results: Array<{url: string; title: string; source: string; publishedAt: Date | null; description: string}> = []
+  
+  try {
+    const res = await fetchWithRetry(
+      `https://api.search.brave.com/res/v1/web/search?q=${encodeURIComponent(query)}&count=10&freshness=pw`,
+      {
+        headers: {
+          'Accept': 'application/json',
+          'X-Subscription-Token': braveKey,
+        },
+      },
+      1
+    )
+    
+    const data = await res.json()
+    
+    for (const item of (data.web?.results || [])) {
+      if (!item.url || !item.title) continue
+      
+      results.push({
+        url: item.url,
+        title: item.title,
+        description: item.description || '',
+        source: 'BraveSearch',
+        publishedAt: new Date(), // Brave 不提供日期，用当前时间
+      })
+    }
+    
+    console.log(`[BraveSearch] "${query}": ${results.length} results`)
+  } catch (err) {
+    console.error(`[BraveSearch] Error for "${query}":`, (err as Error).message)
+  }
+  
+  return results
+}
+
+/**
+ * 通过 YouTube Data API 搜索专家视频
+ */
+export async function discoverViaYouTube(query: string, youtubeKey: string, since: Date): Promise<Array<{url: string; title: string; source: string; publishedAt: Date | null; description: string}>> {
+  const results: Array<{url: string; title: string; source: string; publishedAt: Date | null; description: string}> = []
+  
+  try {
+    const publishedAfter = since.toISOString()
+    const res = await fetchWithRetry(
+      `https://www.googleapis.com/youtube/v3/search?part=snippet&q=${encodeURIComponent(query)}&type=video&order=date&maxResults=10&publishedAfter=${publishedAfter}&key=${youtubeKey}`,
+      {},
+      1
+    )
+    
+    const data = await res.json()
+    
+    for (const item of (data.items || [])) {
+      const videoId = item.id?.videoId
+      if (!videoId) continue
+      
+      const snippet = item.snippet || {}
+      const title = snippet.title || ''
+      const description = snippet.description || ''
+      const publishedAt = snippet.publishedAt ? new Date(snippet.publishedAt) : null
+      
+      if (!title) continue
+      
+      results.push({
+        url: `https://youtube.com/watch?v=${videoId}`,
+        title,
+        description,
+        source: 'YouTube',
+        publishedAt,
+      })
+    }
+    
+    console.log(`[YouTube] "${query}": ${results.length} results`)
+  } catch (err) {
+    console.error(`[YouTube] Error for "${query}":`, (err as Error).message)
+  }
+  
+  return results
+}
+
+// ==================== 内容抓取层 (Fetch) ====================
+
+/**
+ * 从 URL 抓取网页全文 - 参考 news-aggregator 的 Readability 思路
+ * 简单但有效的 HTML 到文本提取
+ */
+export async function fetchPageContent(url: string): Promise<{title: string; content: string; url: string} | null> {
+  try {
+    const res = await fetchWithRetry(url, {}, 2)
+    
+    if (!res.ok) {
+      console.log(`[FetchPage] ${url} returned ${res.status}`)
+      return null
+    }
+    
+    const html = await res.text()
+    
+    // 提取标题
+    const titleMatch = html.match(/<title[^>]*>([\s\S]*?)<\/title>/i)
+    const title = titleMatch ? titleMatch[1].replace(/<[^>]+>/g, '').trim() : ''
+    
+    // 提取正文 - 多策略
+    let content = ''
+    
+    // 策略 1: 找 article 标签
+    const articleMatch = html.match(/<article[^>]*>([\s\S]*?)<\/article>/i)
+    if (articleMatch) {
+      content = htmlToText(articleMatch[1])
+    }
+    
+    // 策略 2: 找 main 标签
+    if (!content || content.length < 500) {
+      const mainMatch = html.match(/<main[^>]*>([\s\S]*?)<\/main>/i)
+      if (mainMatch) {
+        content = htmlToText(mainMatch[1])
+      }
+    }
+    
+    // 策略 3: 找常见内容容器
+    if (!content || content.length < 500) {
+      const contentPatterns = [
+        /class=["'][^"']*content[^"']*["'][^>]*>([\s\S]*?)<\/div>/i,
+        /class=["'][^"']*article[^"']*["'][^>]*>([\s\S]*?)<\/div>/i,
+        /class=["'][^"']*post[^"']*["'][^>]*>([\s\S]*?)<\/div>/i,
+        /id=["']content["'][^>]*>([\s\S]*?)<\/div>/i,
+        /id=["']main-content["'][^>]*>([\s\S]*?)<\/div>/i,
+      ]
+      
+      for (const pattern of contentPatterns) {
+        const match = html.match(pattern)
+        if (match) {
+          const text = htmlToText(match[1])
+          if (text.length > content.length) {
+            content = text
+          }
+        }
+      }
+    }
+    
+    // 策略 4: 提取 body 中所有段落
+    if (!content || content.length < 500) {
+      const bodyMatch = html.match(/<body[^>]*>([\s\S]*?)<\/body>/i)
+      if (bodyMatch) {
+        // 只提取 p 标签内容
+        const pMatches = [...bodyMatch[1].matchAll(/<p[^>]*>([\s\S]*?)<\/p>/gi)]
+        content = pMatches.map(m => htmlToText(m[1])).filter(t => t.length > 20).join('\n\n')
+      }
+    }
+    
+    // 清理
+    content = content
+      .replace(/\n{3,}/g, '\n\n')
+      .replace(/\s{2,}/g, ' ')
+      .trim()
+    
+    if (content.length < 200) {
+      console.log(`[FetchPage] ${url} content too short (${content.length} chars)`)
+      return null
+    }
+    
+    console.log(`[FetchPage] ${url} -> ${content.length} chars`)
+    return { title, content, url }
+  } catch (err) {
+    console.error(`[FetchPage] ${url}:`, (err as Error).message)
+    return null
+  }
+}
+
+/**
+ * 简单 HTML 到文本转换
+ */
+function htmlToText(html: string): string {
+  return html
+    .replace(/<script\b[^<]*(?:(?!<\/script>)<[^<]*)*<\/script>/gi, ' ')
+    .replace(/<style\b[^<]*(?:(?!<\/style>)<[^<]*)*<\/style>/gi, ' ')
+    .replace(/<nav\b[^<]*(?:(?!<\/nav>)<[^<]*)*<\/nav>/gi, ' ')
+    .replace(/<header\b[^<]*(?:(?!<\/header>)<[^<]*)*<\/header>/gi, ' ')
+    .replace(/<footer\b[^<]*(?:(?!<\/footer>)<[^<]*)*<\/footer>/gi, ' ')
+    .replace(/<aside\b[^<]*(?:(?!<\/aside>)<[^<]*)*<\/aside>/gi, ' ')
+    .replace(/<[^>]+>/g, ' ')
+    .replace(/&nbsp;/g, ' ')
+    .replace(/&amp;/g, '&')
+    .replace(/&lt;/g, '<')
+    .replace(/&gt;/g, '>')
+    .replace(/&quot;/g, '"')
+    .replace(/&#\d+;/g, (match) => {
+      try {
+        return String.fromCharCode(parseInt(match.slice(2, -1), 10))
+      } catch {
+        return match
+      }
+    })
+    .replace(/\s+/g, ' ')
+    .trim()
+}
+
+// ==================== 专家识别层 (Identify) ====================
+
+/**
+ * 检查内容是否包含专家名字 - 简化识别，不依赖 Kimi
+ */
+export function identifyExpertInContentSimple(
+  content: string,
+  expert: { name: string; nameEn?: string | null; aliases: string[] }
+): { isMatch: boolean; confidence: number; matchedName: string } {
+  const text = content.toLowerCase()
+  const allNames = [expert.name, expert.nameEn, ...expert.aliases].filter(Boolean) as string[]
+  
+  for (const name of allNames) {
+    if (!name) continue
+    const lowerName = name.toLowerCase()
+    
+    // 全名匹配
+    if (text.includes(lowerName)) {
+      // 检查是否是独立词（避免部分匹配）
+      const regex = new RegExp(`(?:^|[^a-zA-Z0-9\u4e00-\u9fff])${escapeRegex(lowerName)}(?:[^a-zA-Z0-9\u4e00-\u9fff]|$)`, 'i')
+      if (regex.test(text)) {
+        return { isMatch: true, confidence: 0.9, matchedName: name }
+      }
+      // 部分匹配但置信度较低
+      return { isMatch: true, confidence: 0.6, matchedName: name }
+    }
+  }
+  
+  return { isMatch: false, confidence: 0, matchedName: '' }
+}
+
+function escapeRegex(str: string): string {
+  return str.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
+}
+
+// ==================== 去重层 (Deduplicate) ====================
+
+/**
+ * 内容指纹 - 用于去重
+ */
+export function contentFingerprint(text: string): string {
+  // 取前 200 个字符的简化版本作为指纹
+  const normalized = text
+    .toLowerCase()
+    .replace(/\s+/g, ' ')
+    .replace(/[^\u4e00-\u9fff\w]/g, '')
+    .slice(0, 200)
+  
+  // 简单 hash
+  let hash = 0
+  for (let i = 0; i < normalized.length; i++) {
+    const char = normalized.charCodeAt(i)
+    hash = ((hash << 5) - hash) + char
+    hash = hash & hash
+  }
+  return hash.toString(16)
+}
+
+/**
+ * 标题相似度 - 用于去重
+ */
+export function titleSimilarity(a: string, b: string): number {
+  const normalize = (s: string) => s.toLowerCase().replace(/[^\w\u4e00-\u9fff]/g, '')
+  const na = normalize(a)
+  const nb = normalize(b)
+  
+  if (na === nb) return 1
+  if (na.includes(nb) || nb.includes(na)) return 0.8
+  
+  // Jaccard 相似度
+  const setA = new Set(na)
+  const setB = new Set(nb)
+  const intersection = new Set([...setA].filter(x => setB.has(x)))
+  const union = new Set([...setA, ...setB])
+  
+  return intersection.size / union.size
+}
+
+// ==================== 投资相关性过滤 ====================
+
+const INVEST_KEYWORDS = [
   '買入', '賣出', '看好', '看淡', '增持', '減持', '沽出', '目標價', '估值', '股息',
-  'pe', 'pb', '收益率', '牛市', '熊市', '反彈', '回調', '支撑', '阻力', '建倉', '清倉',
+  '牛市', '熊市', '反彈', '回調', '支撑', '阻力', '建倉', '清倉',
   'buy', 'sell', 'bullish', 'bearish', 'long', 'short', 'overweight', 'underweight',
-  'target price', 'price target', 'valuation', 'dividend', 'yield', 'rally', 'pullback',
+  'target price', 'valuation', 'dividend', 'yield', 'rally', 'pullback',
   '看多', '看空', '做多', '做空', '加倉', '減倉',
+  '港股', 'a股', '美股', '納指', '恒指', '上證', '標普', '納斯達克',
+  '黃金', '原油', '比特幣', '國債', '美債', '中概股', 'etf',
+  'hang seng', 'nasdaq', 's&p', 'dow jones', 'gold', 'oil', 'bitcoin',
+  'stock', 'market', 'index', 'fund', 'portfolio', 'invest',
 ]
 
-const INVEST_ASSET_KW = [
-  '港股', 'a股', '美股', '納指', '恒指', '上證', '標普', '納斯達克', '道瓊斯',
-  '黃金', '原油', '比特幣', '以太坊', '國債', '美債', '中概股', 'etf', '基金',
-  'hang seng', 'hsi', 'nasdaq', 's&p', 'dow jones', 'nikkei', 'kospi', 'gold', 'oil',
-  'bitcoin', 'ethereum', 'treasury', 'bond', 'equity', 'stock market',
-]
+export function isInvestmentRelated(text: string): boolean {
+  const lower = text.toLowerCase()
+  const matches = INVEST_KEYWORDS.filter(kw => lower.includes(kw.toLowerCase()))
+  return matches.length >= 2 // 至少匹配 2 个关键词
+}
 
-// 开放式收集源 - 通用财经媒体，不绑定特定专家
-// 从这些源抓取的内容会经过 Kimi 专家识别，自动关联到对应专家
-export const OPEN_COLLECTION_SOURCES = [
-  // Bloomberg
-  { type: 'rss_feed' as const, identifier: 'https://feeds.bloomberg.com/markets/news.rss', name: 'Bloomberg Markets', region: 'global' },
-  { type: 'rss_feed' as const, identifier: 'https://feeds.bloomberg.com/news/economy.rss', name: 'Bloomberg Economy', region: 'global' },
-  // SCMP
-  { type: 'rss_feed' as const, identifier: 'https://www.scmp.com/rss/318198/feed', name: 'SCMP Business', region: 'hk' },
-  { type: 'rss_feed' as const, identifier: 'https://www.scmp.com/rss/318200/feed', name: 'SCMP Markets', region: 'hk' },
-  // 财新
-  { type: 'rss_feed' as const, identifier: 'https://weekly.caixin.com/rss.xml', name: '财新周刊', region: 'cn' },
-  // 新浪财经
-  { type: 'rss_feed' as const, identifier: 'https://finance.sina.com.cn/stock/hkstock/ggscyd/rss.xml', name: '新浪财经港股', region: 'hk' },
-  // Podcast
-  { type: 'podcast_rss' as const, identifier: 'https://feeds.megaphone.fm/BLM1726920077', name: 'Moving Markets (Bloomberg)', region: 'global', note: 'Bloomberg Moving Markets podcast - 可能包含多位专家观点' },
-  { type: 'podcast_rss' as const, identifier: 'https://feeds.megaphone.fm/BLM2074447575', name: 'Odd Lots (Bloomberg)', region: 'global', note: 'Bloomberg Odd Lots podcast' },
-  // 其他国际源
-  { type: 'rss_feed' as const, identifier: 'https://feeds.afr.com/feed', name: 'Australian Financial Review', region: 'global' },
-  { type: 'rss_feed' as const, identifier: 'https://www.ft.com/?format=rss', name: 'Financial Times', region: 'global' },
-]
+// ==================== 旧函数兼容 ====================
 
-function withTimeout<T>(promise: Promise<T>, ms: number): Promise<T> {
-  return Promise.race([
-    promise,
-    new Promise<T>((_, reject) => setTimeout(() => reject(new Error(`timeout after ${ms}ms`)), ms))
-  ])
+// 保留旧函数签名但用新实现
+export async function fetchYouTubeChannel(channelId: string, apiKey: string, since: Date) {
+  if (channelId.startsWith('PLACEHOLDER_')) {
+    return []
+  }
+  // 用搜索代替直接频道抓取
+  return discoverViaYouTube(`channel:${channelId}`, apiKey, since)
+}
+
+export async function fetchRSSFeed(feedUrl: string, expertName: string, since: Date) {
+  // 旧函数不再使用，返回空
+  console.log(`[Deprecated] fetchRSSFeed called for ${feedUrl}, using discovery instead`)
+  return []
+}
+
+export async function fetchNewsAPI(query: string, newsApiKey: string, since: Date, language?: string) {
+  // 旧函数不再使用，返回空
+  console.log(`[Deprecated] fetchNewsAPI called, using discovery instead`)
+  return []
+}
+
+export async function fetchBraveSearch(query: string, braveKey: string) {
+  const since = new Date(Date.now() - 7 * 24 * 3600 * 1000)
+  const results = await discoverViaBraveSearch(query, braveKey, since)
+  return results.map(r => ({ title: r.title, url: r.url, description: r.description }))
+}
+
+export async function fetchOpenCollectionSources(since: Date): Promise<any[]> {
+  // 旧函数不再使用
+  return []
+}
+
+export async function identifyExpertInContent(contentText: string, experts: any[], kimiKey: string) {
+  // 用简化识别代替 Kimi
+  const results: Array<{ name: string; confidence: number; quotedText: string; reasoning: string }> = []
+  
+  for (const expert of experts) {
+    const { isMatch, confidence, matchedName } = identifyExpertInContentSimple(contentText, expert)
+    if (isMatch) {
+      // 提取引用文本（专家名字前后 200 字符）
+      const idx = contentText.toLowerCase().indexOf(matchedName.toLowerCase())
+      const start = Math.max(0, idx - 200)
+      const end = Math.min(contentText.length, idx + 200)
+      const quotedText = contentText.slice(start, end)
+      
+      results.push({
+        name: expert.name,
+        confidence,
+        quotedText,
+        reasoning: `Content contains expert name "${matchedName}"`,
+      })
+    }
+  }
+  
+  return results
+}
+
+export function isBlacklistedExpert(name: string): boolean {
+  const blacklist = ['許佳龍', '许佳龙']
+  return blacklist.some(b => name.includes(b) || b.includes(name))
+}
+
+export function filterInvestmentRelevance(text: string): { pass: boolean; reason: string } {
+  if (!text || text.length < 100) return { pass: false, reason: 'too_short' }
+  if (!isInvestmentRelated(text)) return { pass: false, reason: 'not_investment_related' }
+  return { pass: true, reason: 'ok' }
 }
 
 export function isEducationalPage(url: string): boolean {
   if (!url) return false
+  const educationalDomains = [
+    'hkex.com.hk', 'hangseng.com', 'hsbc.com.hk', 'boc.hk', 'dbs.com.hk',
+    'sc.com.hk', 'bankofchina.com', 'icbc.com.cn', 'ccb.com', 'abchina.com',
+  ]
+  const educationalPaths = [
+    '/personal/investment/', '/wealth-management/', '/investment-guide/',
+    '/etf-guide/', '/market-data/', '/securities-prices/', '/trading-guide/',
+    '/investor-education/', '/learning-center/', '/faq/', '/help/',
+    '/us-stock-etf-guide/',
+  ]
+  
   try {
     const domain = new URL(url).hostname.replace(/^www\./, '')
     const lowerUrl = url.toLowerCase()
-    if (EDUCATIONAL_DOMAIN_BLACKLIST.some(d => domain.includes(d))) return true
-    if (EDUCATIONAL_PATH_PATTERNS.some(p => lowerUrl.includes(p))) return true
+    if (educationalDomains.some(d => domain.includes(d))) return true
+    if (educationalPaths.some(p => lowerUrl.includes(p))) return true
   } catch { /* ignore */ }
   return false
 }
 
 export function isEducationalContent(text: string): boolean {
   if (!text) return false
-  const lower = text.toLowerCase()
-  return EDUCATIONAL_CONTENT_PATTERNS.some(pattern =>
-    lower.includes(pattern.toLowerCase())
-  )
-}
-
-export function filterInvestmentRelevance(text: string): { pass: boolean; reason: string } {
-  if (!text) return { pass: false, reason: 'empty' }
-  if (text.length < 100) return { pass: false, reason: 'too_short' }
-
-  const lower = text.toLowerCase()
-
-  if (isEducationalContent(text)) {
-    return { pass: false, reason: 'educational_content' }
-  }
-
-  const catA = INVEST_ACTION_KW.some(kw => lower.includes(kw.toLowerCase()))
-  const catB = INVEST_ASSET_KW.some(kw => lower.includes(kw.toLowerCase()))
-  const catC = /\b[A-Z]{2,5}\b/.test(text) || /\b\d{4}\.HK\b/i.test(text)
-
-  const score = (catA ? 1 : 0) + (catB ? 1 : 0) + (catC ? 1 : 0)
-  if (score < 2) return { pass: false, reason: `low_relevance_score_${score}` }
-
-  return { pass: true, reason: 'ok' }
-}
-
-export async function fetchYouTubeChannel(channelId: string, apiKey: string, since: Date) {
-  const results: any[] = []
-  if (channelId.startsWith('PLACEHOLDER_')) {
-    console.log(`[YouTube] Skipping placeholder channel: ${channelId}`)
-    return results
-  }
-  try {
-    const publishedAfter = encodeURIComponent(since.toISOString())
-    const res = await withTimeout(fetch(
-      `https://www.googleapis.com/youtube/v3/search?channelId=${channelId}&type=video&order=date&maxResults=5&publishedAfter=${publishedAfter}&key=${apiKey}`
-    ), FETCH_TIMEOUT_MS)
-    const data = await res.json()
-
-    for (const item of (data.items || [])) {
-      const videoId = item.id?.videoId
-      if (!videoId) continue
-      const title = item.snippet?.title || ''
-      const description = item.snippet?.description || ''
-      const publishedAt = item.snippet?.publishedAt
-
-      const content = [title, description].filter(Boolean).join('\n\n')
-      const relevance = filterInvestmentRelevance(content)
-      if (!relevance.pass) continue
-
-      results.push({
-        sourceType: 'youtube',
-        sourceUrl: `https://youtube.com/watch?v=${videoId}`,
-        contentText: content,
-        publishedAt: publishedAt ? new Date(publishedAt) : null,
-        title,
-        verificationStatus: 'verified',
-      })
-    }
-  } catch (err) {
-    console.error('[YouTube] Error:', err)
-  }
-  return results
-}
-
-export async function fetchRSSFeed(feedUrl: string, expertName: string, since: Date) {
-  const results: any[] = []
-  if (isEducationalPage(feedUrl)) {
-    console.log(`[RSS] Skipping educational domain: ${feedUrl}`)
-    return results
-  }
-
-  try {
-    const res = await withTimeout(fetch(feedUrl, {
-      headers: { 'User-Agent': 'Mozilla/5.0 AlphaInsight/2.0', 'Accept': 'application/rss+xml, application/atom+xml' }
-    }), FETCH_TIMEOUT_MS)
-    const text = await res.text()
-
-    const itemRegex = /<item[^>]*>([\s\S]*?)<\/item>/gi
-    const entryRegex = /<entry[^>]*>([\s\S]*?)<\/entry>/gi
-    const items = [...Array.from(text.matchAll(itemRegex)), ...Array.from(text.matchAll(entryRegex))]
-
-    for (const match of items.slice(0, 8)) {
-      const itemXml = match[1]
-
-      const getTag = (tag: string) => {
-        const m1 = itemXml.match(new RegExp(`<${tag}[^>]*>(?:<!\[CDATA\[)?([\s\S]*?)(?:\]\]>)?<\/${tag}>`, 'i'))
-        if (m1) return m1[1].trim()
-        if (tag === 'link') {
-          const m2 = itemXml.match(/<link[^>]+href=["']([^"']+)["']/i)
-          if (m2) return m2[1].trim()
-        }
-        return ''
-      }
-
-      const title = getTag('title')
-      const description = getTag('description') || getTag('content') || getTag('summary')
-      const link = getTag('link') || getTag('guid') || getTag('id')
-      const pubDateStr = getTag('pubDate') || getTag('published') || getTag('updated')
-      const author = getTag('author') || getTag('dc:creator')
-
-      if (isEducationalPage(link)) {
-        console.log(`[RSS] Skipping educational item: ${link}`)
-        continue
-      }
-
-      let publishedAt: Date | null = null
-      if (pubDateStr) {
-        const d = new Date(pubDateStr)
-        if (!isNaN(d.getTime())) {
-          if (d < since) continue
-          publishedAt = d
-        }
-      }
-
-      if (!description && !title) continue
-      const content = [title, description].filter(Boolean).join('\n\n')
-
-      if (isEducationalContent(content)) {
-        console.log(`[RSS] Filtered educational content: ${title.slice(0, 80)}`)
-        continue
-      }
-
-      const relevance = filterInvestmentRelevance(content)
-      if (!relevance.pass) continue
-
-      let verificationStatus = 'unverified'
-      if (author && expertName) {
-        const authorLower = author.toLowerCase()
-        const expertLower = expertName.toLowerCase()
-        if (authorLower.includes(expertLower) || expertLower.includes(authorLower)) {
-          verificationStatus = 'verified'
-        }
-      }
-
-      results.push({
-        sourceType: 'rss',
-        sourceUrl: link || feedUrl,
-        contentText: content,
-        publishedAt,
-        title,
-        verificationStatus,
-      })
-    }
-  } catch (err) {
-    console.error(`[RSS] Error fetching ${feedUrl}:`, err)
-  }
-  return results
-}
-
-export async function fetchBraveSearch(query: string, braveKey: string) {
-  try {
-    const res = await withTimeout(fetch(
-      `https://api.search.brave.com/res/v1/web/search?q=${encodeURIComponent(query)}&count=5&freshness=pw`,
-      { headers: { 'Accept': 'application/json', 'X-Subscription-Token': braveKey } }
-    ), FETCH_TIMEOUT_MS)
-    const data = await res.json()
-    return (data.web?.results || []).map((item: any) => ({
-      title: item.title,
-      url: item.url,
-      description: item.description,
-    }))
-  } catch {
-    return []
-  }
-}
-
-export async function fetchNewsAPI(query: string, newsApiKey: string, since: Date, language: string = 'en') {
-  const results: any[] = []
-  try {
-    const fromDate = since.toISOString().split('T')[0]
-    const langParam = language ? `&language=${language}` : ''
-    const res = await withTimeout(fetch(
-      `https://newsapi.org/v2/everything?q=${encodeURIComponent(query)}&from=${fromDate}&sortBy=publishedAt&pageSize=10${langParam}&apiKey=${newsApiKey}`
-    ), FETCH_TIMEOUT_MS)
-    const data = await res.json()
-
-    for (const article of (data.articles || [])) {
-      const content = [article.title, article.description].filter(Boolean).join('\n\n')
-      const relevance = filterInvestmentRelevance(content)
-      if (!relevance.pass) continue
-
-      results.push({
-        sourceType: 'news',
-        sourceUrl: article.url,
-        contentText: content,
-        publishedAt: article.publishedAt ? new Date(article.publishedAt) : null,
-        title: article.title,
-        verificationStatus: 'unverified',
-      })
-    }
-  } catch (err) {
-    console.error('[NewsAPI] Error:', err)
-  }
-  return results
-}
-
-export function isBlacklistedExpert(name: string): boolean {
-  return EXPERT_BLACKLIST.some(b => name.includes(b) || b.includes(name))
-}
-
-// ==================== 开放式收集 (Open Collection) ====================
-
-/**
- * 从通用财经源抓取内容，不预设专家归属
- * 返回的内容会经过后续的专家识别步骤
- */
-export async function fetchOpenCollectionSources(since: Date): Promise<any[]> {
-  const allItems: any[] = []
-
-  for (const source of OPEN_COLLECTION_SOURCES) {
-    try {
-      let items: any[] = []
-      switch (source.type) {
-        case 'rss_feed':
-        case 'podcast_rss':
-          // 对于开放式收集，expertName 传空字符串，不做作者匹配验证
-          items = await fetchRSSFeed(source.identifier, '', since)
-          break
-      }
-      // 标记为开放式收集来源
-      for (const item of items) {
-        item.openCollectionSource = source.name
-        item.openCollectionRegion = source.region
-        item.verificationStatus = 'open_collection' // 需要后续专家识别
-      }
-      allItems.push(...items)
-      console.log(`[OpenCollection] ${source.name}: ${items.length} items`)
-    } catch (err) {
-      console.error(`[OpenCollection] Error fetching ${source.name}:`, err)
-    }
-  }
-
-  return allItems
-}
-
-/**
- * 使用 Kimi 识别内容中是否包含目标专家的观点
- * @param contentText 内容文本
- * @param experts 专家列表，包含 name, nameEn, aliases
- * @param kimiKey Kimi API Key
- * @returns 识别到的专家列表及置信度
- */
-export async function identifyExpertInContent(
-  contentText: string,
-  experts: Array<{ name: string; nameEn?: string | null; aliases: string[] }>,
-  kimiKey: string
-): Promise<Array<{ name: string; confidence: number; quotedText: string; reasoning: string }>> {
-  const expertList = experts.map(e => {
-    const allNames = [e.name, e.nameEn, ...e.aliases].filter(Boolean)
-    return `- ${e.name}${e.nameEn ? ` (${e.nameEn})` : ''} [别名: ${allNames.join(', ')}]`
-  }).join('\n')
-
-  const prompt = `你是一位财经内容分析专家。请仔细阅读以下财经文章/播客内容，识别其中是否明确引用了以下任何一位专家的观点、评论或预测。
-
-目标专家列表：
-${expertList}
-
-识别规则：
-1. 必须是在内容中**明确被引用**的观点，不能是文章作者自己的分析
-2. 专家名字可能以中文、英文或别名出现
-3. 如果内容是关于某位专家的**报道**（如"洪灝表示..."、"据 Jurrien Timmer 分析..."），也算引用
-4. 如果专家只是被提及名字但没有表达观点（如"洪灝出席了会议"），不算引用
-5. 对于播客/访谈内容，要识别出被采访的专家
-
-请返回 JSON 格式：
-{
-  "identified_experts": [
-    {
-      "name": "专家中文名",
-      "confidence": 0.95,
-      "quoted_text": "内容中引用该专家观点的具体段落（50-200字）",
-      "reasoning": "为什么认为这段内容引用了该专家的观点"
-    }
+  const patterns = [
+    'ETF 的两种类型', '被动型 ETF', '主动型 ETF', 'ETF 基础知识',
+    '交易所买卖基金', '追踪指数', '跑赢大市', '主动管理基金',
+    '被动管理基金', 'ETF 费用比率', 'ETF 管理费', '证监会认可',
+    '集体投资计划', '全方位财富管理', '财富管理服务',
+    '证券及期货事务监察委员会',
   ]
-}
-
-如果没有识别到任何专家观点，返回 {"identified_experts": []}
-
---- 内容开始 ---
-${contentText.slice(0, 8000)}
---- 内容结束 ---`
-
-  try {
-    const res = await withTimeout(fetch('https://api.moonshot.cn/v1/chat/completions', {
-      method: 'POST',
-      headers: { 'Authorization': `Bearer ${kimiKey}`, 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        model: 'moonshot-v1-32k',
-        messages: [
-          { role: 'system', content: '你是一个精准的财经内容分析助手，擅长识别文章中引用的专家观点。只返回 JSON，不要添加任何解释。' },
-          { role: 'user', content: prompt }
-        ],
-        temperature: 0.1,
-        max_tokens: 2000
-      })
-    }), FETCH_TIMEOUT_MS)
-
-    const data = await res.json()
-    const raw = data.choices?.[0]?.message?.content || ''
-    const match = raw.match(/\{[\s\S]*\}/)
-    if (!match) return []
-
-    const parsed = JSON.parse(match[0])
-    return (parsed.identified_experts || []).filter((e: any) => e.confidence >= 0.6)
-  } catch (err) {
-    console.error('[identifyExpertInContent] Error:', err)
-    return []
-  }
-}
-
-/**
- * 从 Brave Search 结果中获取页面全文内容
- * 用于补充 RSS/NewsAPI 只抓到摘要的情况
- */
-export async function fetchPageContent(url: string): Promise<string | null> {
-  try {
-    const res = await withTimeout(fetch(url, {
-      headers: { 'User-Agent': 'Mozilla/5.0 AlphaInsight/2.0' }
-    }), FETCH_TIMEOUT_MS)
-    const html = await res.text()
-
-    // 简单的 HTML 到文本提取
-    const text = html
-      .replace(/<script\b[^<]*(?:(?!<\/script>)<[^<]*)*<\/script>/gi, ' ')
-      .replace(/<style\b[^<]*(?:(?!<\/style>)<[^<]*)*<\/style>/gi, ' ')
-      .replace(/<[^>]+>/g, ' ')
-      .replace(/\s+/g, ' ')
-      .trim()
-
-    return text.slice(0, 15000)
-  } catch (err) {
-    console.error(`[fetchPageContent] Error fetching ${url}:`, err)
-    return null
-  }
+  const lower = text.toLowerCase()
+  return patterns.some(pattern => lower.includes(pattern.toLowerCase()))
 }

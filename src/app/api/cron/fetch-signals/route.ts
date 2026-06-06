@@ -1,15 +1,18 @@
 import { NextResponse } from 'next/server'
 import { prisma } from '@/lib/prisma'
 import {
-  fetchYouTubeChannel,
-  fetchRSSFeed,
-  fetchNewsAPI,
-  fetchBraveSearch,
-  fetchOpenCollectionSources,
-  identifyExpertInContent,
+  discoverViaBingNews,
+  discoverViaGoogleNews,
+  discoverViaBraveSearch,
+  discoverViaYouTube,
   fetchPageContent,
+  identifyExpertInContentSimple,
+  contentFingerprint,
+  titleSimilarity,
+  isInvestmentRelated,
+  isEducationalContent,
+  isEducationalPage,
   isBlacklistedExpert,
-  filterInvestmentRelevance,
 } from '@/lib/content-fetcher'
 import { successResponse, errorResponse } from '@/lib/api-helpers'
 
@@ -20,56 +23,34 @@ const HORIZON_DAYS: Record<string, number> = {
   immediate: 3, '1w': 7, '1m': 30, '3m': 90, '6m': 180, '1y': 365, structural: 730
 }
 
-const STYLE_GUIDANCE: Record<string, string> = {
-  principled_macro: 'reasons from macro first principles. Prioritize structural theses with data support.',
-  emotional_momentum: 'is emotionally expressive and momentum-driven. Watch for overconfidence.',
-  cryptic_contrarian: 'speaks obliquely and often implies the opposite of consensus.',
-  quantitative: 'relies on models and precise data. Extract numerical claims.',
-  fundamental_analyst: 'focuses on valuations, earnings, and fundamentals.',
-  narrative_driven: 'builds narratives around central theses.',
-  technical_chartist: 'reads price action and patterns. Extract specific price levels.',
-}
-
 const ASSET_ALIASES: Record<string, string[]> = {
-  // 美股大盘
   SPY: ['美股', 's&p', '标普', 'sp500', 's&p 500'],
   QQQ: ['纳指', 'nasdaq', '科技股', 'qqq'],
-  // 中国/香港
   EWH: ['港股', '恒生', 'hong kong', 'hsi', 'hang seng'],
   FXI: ['中国大盘', '沪深', 'a股', '大盘', 'ftse china', '富时中国'],
   MCHI: ['msci china', '中国市场', 'msci 中国'],
   KWEB: ['互联网', '腾讯', 'tencent', '阿里', 'alibaba', '百度', 'baidu', '中国互联网', '中概互联'],
   CQQQ: ['中国科技', 'china tech', '中概科技'],
-  // 商品
   GLD: ['黄金', 'gold', '贵金属'],
   SLV: ['白银', 'silver'],
   COPX: ['铜', 'copper', '铜矿'],
   URA: ['铀', 'uranium', '核能'],
-  // 债券
   TLT: ['美债', '国债', 'treasury', 'bond', '债券', '长期国债'],
-  // 加密货币
   IBIT: ['比特币', 'bitcoin', 'btc', 'crypto'],
-  // 科技
   SMH: ['半导体', '芯片', 'semiconductor', 'nvda', 'nvidia', 'tsmc', '台积电'],
   SOXX: ['半导体', '芯片', 'semiconductor', 'chip'],
-  // 新兴市场
   EEM: ['新兴市场', 'emerging markets'],
   INDA: ['印度', 'india', 'sensex', 'nifty'],
   VNM: ['越南', 'vietnam'],
   KSA: ['沙特', 'saudi arabia', '沙特阿拉伯'],
   ASEA: ['东南亚', 'southeast asia', '东盟'],
-  // 发达市场
   EWJ: ['日本', '日经', 'nikkei', 'japan'],
   VGK: ['欧洲', 'europe', 'eu', '斯托克'],
   EWY: ['韩国', '三星', 'samsung', 'kospi', 'korea'],
-  // 能源
   XLE: ['石油', '原油', 'oil', 'energy', '能源'],
   UNG: ['天然气', 'natural gas'],
-  // REITs
   VNQ: ['reits', '房地产', 'real estate', '地产'],
-  // 外汇
   UUP: ['美元', 'us dollar', 'dxy', '美元指数'],
-  // 其他
   TAN: ['光伏', '太阳能', 'solar'],
   ARKK: ['ark', '创新', 'innovation', '木头姐'],
   IWM: ['罗素', 'russell', '小盘', 'small cap'],
@@ -79,25 +60,15 @@ const ASSET_ALIASES: Record<string, string[]> = {
 }
 
 function buildSystemPrompt(expert: any) {
-  const style = expert.communicationStyle || 'fundamental_analyst'
-  const guidance = STYLE_GUIDANCE[style] || ''
-  const bias = expert.biasProfile as any || {}
-  const bull = (bias.permabullSectors || []).join(', ') || 'none on record'
-  const bear = (bias.permabearSectors || []).join(', ') || 'none on record'
-
-  return `You are a precision financial signal extractor for ${expert.name}${expert.institution ? ' (' + expert.institution + ')' : ''}.
-EXPERT PROFILE: style=${style}. This expert ${guidance}. Bullish on: ${bull}. Bearish on: ${bear}.
+  return `You are a precision financial signal extractor for ${expert.name}.
 
 CORE RULES:
-1. Extract ONLY views EXPLICITLY stated by ${expert.name}. Do NOT infer views not in the text.
+1. Extract ONLY views EXPLICITLY stated by ${expert.name} in the content.
 2. A valid signal REQUIRES: (a) named asset/ETF, (b) explicit direction (bullish/bearish), (c) stated reason.
 3. If conviction < 5, exclude. If confidence_in_extraction < 0.6, exclude.
-4. For interviews: only extract interviewee's views, not the host's.
-5. Return ONLY valid JSON, no prose.
-6. 【CONTENT TYPE VALIDATION】Purely political/social news with NO investment stance → return {"views": []}
-7. 【FRESHNESS】Only extract views about current market conditions. If content is clearly older than 14 days, return {"views": []}.
-8. 【PRIORITY】Only extract the TOP 1-2 most important views with specific assets and clear direction.
-9. 【EDUCATIONAL FILTER】If content explains what ETF is, types of ETF, or general investment education → return {"views": []}
+4. Return ONLY valid JSON, no prose.
+5. If no valid investment views found, return {"views": []}.
+6. 【EDUCATIONAL FILTER】If content explains what ETF is, types of ETF, or general investment education → return {"views": []}
 
 OUTPUT FORMAT:
 {"views":[{"claim":"...","evidence":"...","target_assets":["ticker or name"],"direction":"bullish|bearish|neutral","conviction":7,"time_horizon":"immediate|1w|1m|3m|6m|1y|structural","thesis_type":"fundamental|macro|technical|flow_based|sentiment|geopolitical","hedging_level":3,"emotional_tone":"calm|urgent|panicked|greedy|sarcastic|dismissive|neutral","specificity":6,"themes":["theme"],"confidence_in_extraction":0.8}]}`
@@ -132,151 +103,14 @@ async function callKimi(messages: any[], kimiKey: string) {
 }
 
 /**
- * 处理单个内容项，提取信号并保存
+ * 主抓取流程 - 新架构
+ * 1. 发现内容 (Bing News + Google News + Brave Search + YouTube)
+ * 2. 去重
+ * 3. 抓取网页全文
+ * 4. 识别专家
+ * 5. 提取信号
+ * 6. 保存
  */
-async function processContentItem(
-  item: any,
-  expert: any,
-  kimiKey: string,
-  allIngested: any[],
-  sourceVerificationStatus: string = 'unverified'
-) {
-  const systemPrompt = buildSystemPrompt(expert)
-  const userMsg = `Content from ${expert.name} — ${item.publishedAt ? 'published: ' + item.publishedAt.toISOString() : '[DATE_UNKNOWN]'}
-Source: ${item.sourceUrl || 'unknown'}
-${item.openCollectionSource ? `Open Collection Source: ${item.openCollectionSource}` : ''}
-
---- BEGIN CONTENT ---
-${item.contentText.slice(0, 15000)}
---- END CONTENT ---
-
-Extract the top 1-2 highest-conviction investment views. If content is educational (explaining ETF types, definitions, etc.), return empty views.`
-
-  const parsed = await callKimi([
-    { role: 'system', content: systemPrompt },
-    { role: 'user', content: userMsg }
-  ], kimiKey)
-
-  if (!parsed?.views?.length) return
-
-  for (const view of parsed.views) {
-    if ((view.confidence_in_extraction || 0) < 0.6) continue
-    if (view.direction === 'neutral') continue
-    if ((view.conviction || 0) < 5) continue
-
-    // Check if educational content slipped through
-    const claimLower = (view.claim || '').toLowerCase()
-    if (claimLower.includes('etf') && (claimLower.includes('类型') || claimLower.includes('分为') || claimLower.includes('什么是'))) {
-      console.log(`[${expert.name}] Filtering educational claim: ${view.claim}`)
-      continue
-    }
-
-    // Anti-hallucination check
-    const validAssets = (view.target_assets || []).filter((a: string) => assetMentionedInText(a, item.contentText))
-    if (!validAssets.length) continue
-
-    // Resolve ETF tickers
-    let etfTickers = validAssets.filter((a: string) => /^[A-Z]{2,6}$/.test(a.trim().toUpperCase()))
-    const knownTickers = Object.keys(ASSET_ALIASES)
-    const unknownAssets: string[] = []
-    
-    if (!etfTickers.length) {
-      for (const [ticker, aliases] of Object.entries(ASSET_ALIASES)) {
-        if (aliases.some(a => item.contentText.toLowerCase().includes(a))) {
-          etfTickers.push(ticker)
-        }
-      }
-    }
-    
-    // 记录专家提到但系统未覆盖的资产
-    const allMentionedAssets = view.target_assets || []
-    for (const asset of allMentionedAssets) {
-      const upperAsset = asset.trim().toUpperCase()
-      // 如果是有效的 ETF ticker 但不在我们的列表中
-      if (/^[A-Z]{2,6}$/.test(upperAsset) && !knownTickers.includes(upperAsset)) {
-        unknownAssets.push(upperAsset)
-      }
-      // 如果是中文资产名称，检查是否有别名匹配
-      if (!/^[A-Z]{2,6}$/.test(asset) && !Object.values(ASSET_ALIASES).some(aliases => aliases.some(a => item.contentText.toLowerCase().includes(a.toLowerCase())))) {
-        // 检查是否已经在 unknownAssets 中（避免重复记录中文名称）
-        if (!unknownAssets.includes(asset)) {
-          unknownAssets.push(asset)
-        }
-      }
-    }
-    
-    // 保存到 SuggestedETF（去重，避免同一专家同一资产重复记录）
-    for (const unknown of unknownAssets.slice(0, 3)) { // 最多记录3个
-      try {
-        const existing = await prisma.suggestedETF.findFirst({
-          where: {
-            ticker: unknown,
-            mentionedBy: expert.name,
-            status: 'pending',
-          }
-        })
-        if (!existing) {
-          await prisma.suggestedETF.create({
-            data: {
-              ticker: unknown,
-              mentionedBy: expert.name,
-              expertId: expert.id,
-              reason: view.claim?.slice(0, 500),
-              sourceUrl: item.sourceUrl,
-              status: 'pending',
-            }
-          })
-          console.log(`[SuggestedETF] New asset mentioned by ${expert.name}: ${unknown}`)
-        }
-      } catch (err) {
-        console.error(`[SuggestedETF] Error recording ${unknown}:`, err)
-      }
-    }
-
-    const conviction = Math.min(10, Math.max(1, Math.round(view.conviction || 5)))
-    const horizon = HORIZON_DAYS[view.time_horizon] !== undefined ? view.time_horizon : '1m'
-    const expiresAt = new Date(Date.now() + HORIZON_DAYS[horizon] * 86400000)
-    const rawSentiment = directionToSentiment(view.direction, conviction)
-
-    await prisma.signal.create({
-      data: {
-        expertId: expert.id,
-        etfCode: etfTickers[0] || null,
-        etfTickers,
-        sentimentDirection: view.direction,
-        rawSentiment,
-        isCalibrated: false,
-        confidenceScore: view.confidence_in_extraction || 0.7,
-        convictionScore: conviction,
-        timeHorizon: horizon,
-        thesisType: view.thesis_type || 'macro',
-        hedgingLevel: Math.min(10, Math.max(0, view.hedging_level ?? 3)),
-        emotionalTone: view.emotional_tone || 'neutral',
-        specificity: Math.min(10, Math.max(0, view.specificity ?? 5)),
-        themes: view.themes || [],
-        extractedClaims: [view.claim].filter(Boolean),
-        supportingEvidence: view.evidence ? [view.evidence] : [],
-        sourcePlatform: item.sourceType,
-        sourceUrl: item.sourceUrl,
-        sourceVerificationStatus: sourceVerificationStatus,
-        rawSummary: (view.claim || '').slice(0, 300),
-        isManualInjection: false,
-        signalTimestamp: item.publishedAt || new Date(),
-        expiresAt,
-      }
-    })
-
-    allIngested.push({
-      expert: expert.name,
-      claim: view.claim,
-      direction: view.direction,
-      etfTickers,
-      source: item.sourceType,
-      openCollection: item.openCollectionSource || null,
-    })
-  }
-}
-
 export async function GET(req: Request) {
   const cronSecret = req.headers.get('x-cron-secret')
   if (cronSecret !== process.env.CRON_SECRET) {
@@ -287,15 +121,18 @@ export async function GET(req: Request) {
     const KIMI_KEY = process.env.KIMI_API_KEY
     const YOUTUBE_KEY = process.env.YOUTUBE_API_KEY
     const BRAVE_KEY = process.env.BRAVE_SEARCH_KEY
-    const NEWSAPI_KEY = process.env.NEWSAPI_KEY
+    
     if (!KIMI_KEY) return errorResponse('KIMI_API_KEY not configured', 500)
 
     const experts = await prisma.expert.findMany({ where: { isActive: true } })
     const allIngested: any[] = []
     const since = new Date(Date.now() - 7 * 24 * 3600 * 1000)
+    
+    // 已处理的 URL 和内容指纹集合（去重用）
+    const processedUrls = new Set<string>()
+    const processedFingerprints = new Set<string>()
 
-    // ==================== Phase 1: 专家专属源抓取 ====================
-    console.log(`[FetchSignals] Phase 1: Expert-specific sources (${experts.length} experts)`)
+    console.log(`[FetchSignals] Starting fetch for ${experts.length} experts, since ${since.toISOString()}`)
 
     for (const expert of experts) {
       if (isBlacklistedExpert(expert.name)) {
@@ -303,164 +140,281 @@ export async function GET(req: Request) {
         continue
       }
 
-      const sources = (expert.contentSources as any[]) || []
-      if (!sources.length) {
-        console.log(`[${expert.name}] No content sources configured`)
-        continue
-      }
+      console.log(`\n========== ${expert.name} ==========`)
 
-      const expertContent: any[] = []
+      // ========== Phase 1: 内容发现 ==========
+      const discoveredItems: Array<{
+        url: string
+        title: string
+        source: string
+        publishedAt: Date | null
+        description?: string
+      }> = []
 
-      for (const source of sources) {
-        // 跳过占位符
-        if (source.identifier && source.identifier.startsWith('PLACEHOLDER_')) {
-          console.log(`[${expert.name}] Skipping placeholder source: ${source.identifier}`)
-          continue
-        }
+      // 构建搜索查询
+      const isChinese = /[\u4e00-\u9fff]/.test(expert.name)
+      const searchQueries = isChinese
+        ? [
+            `${expert.name} 股评 港股`,
+            `${expert.name} 财经 分析`,
+            `${expert.name} 市场 观点`,
+          ]
+        : [
+            `${expert.name} market analysis`,
+            `${expert.name} investment view`,
+            `${expert.name} stock market`,
+          ]
 
-        let items: any[] = []
+      // 1a. Bing News RSS 搜索
+      for (const query of searchQueries.slice(0, 2)) {
         try {
-          switch (source.type) {
-            case 'youtube_channel':
-              if (YOUTUBE_KEY) {
-                items = await fetchYouTubeChannel(source.identifier, YOUTUBE_KEY, since)
-                console.log(`[${expert.name}] YouTube: ${items.length} items`)
-              }
-              break
-            case 'rss_feed':
-            case 'podcast_rss':
-              items = await fetchRSSFeed(source.identifier, expert.name, since)
-              console.log(`[${expert.name}] RSS (${source.identifier}): ${items.length} items`)
-              break
-            case 'news_api':
-              if (NEWSAPI_KEY) {
-                // 根据专家名字判断语言：中文专家用中文搜索
-                const isChineseExpert = /[\u4e00-\u9fff]/.test(expert.name)
-                const lang = isChineseExpert ? 'zh' : 'en'
-                items = await fetchNewsAPI(source.identifier, NEWSAPI_KEY, since, lang)
-                console.log(`[${expert.name}] NewsAPI (lang=${lang}): ${items.length} items`)
-              }
-              break
-            case 'brave_search':
-              if (BRAVE_KEY) {
-                const searchResults = await fetchBraveSearch(source.identifier, BRAVE_KEY)
-                // Brave Search 返回的是搜索结果，需要获取页面内容
-                for (const result of searchResults.slice(0, 3)) { // 限制前3个结果
-                  try {
-                    const pageContent = await fetchPageContent(result.url)
-                    if (pageContent) {
-                      const relevance = filterInvestmentRelevance(pageContent)
-                      if (relevance.pass) {
-                        items.push({
-                          sourceType: 'brave_search',
-                          sourceUrl: result.url,
-                          contentText: pageContent,
-                          publishedAt: new Date(),
-                          title: result.title,
-                          verificationStatus: 'unverified',
-                        })
-                      }
-                    }
-                  } catch (err) {
-                    console.log(`[${expert.name}] Brave page fetch failed: ${result.url}`)
-                  }
-                }
-                console.log(`[${expert.name}] Brave Search: ${items.length} items`)
-              }
-              break
-          }
+          const items = await discoverViaBingNews(query, since)
+          discoveredItems.push(...items)
+          console.log(`[${expert.name}] Bing News "${query}": ${items.length} items`)
         } catch (err) {
-          console.error(`[${expert.name}] Error fetching ${source.type}:`, err)
+          console.error(`[${expert.name}] Bing News error:`, (err as Error).message)
         }
-        expertContent.push(...items)
       }
 
-      // 提取信号
-      for (const item of expertContent) {
-        await processContentItem(item, expert, KIMI_KEY, allIngested, item.verificationStatus || 'unverified')
-      }
-    }
-
-    // ==================== Phase 2: 开放式收集 (Open Collection) ====================
-    console.log('[FetchSignals] Phase 2: Open Collection from general financial media')
-
-    const openCollectionItems = await fetchOpenCollectionSources(since)
-    console.log(`[OpenCollection] Total items to process: ${openCollectionItems.length}`)
-
-    // 批量处理，每批 5 个内容项进行专家识别（避免 Kimi API 过载）
-    const batchSize = 5
-    for (let i = 0; i < openCollectionItems.length; i += batchSize) {
-      const batch = openCollectionItems.slice(i, i + batchSize)
-      console.log(`[OpenCollection] Processing batch ${Math.floor(i / batchSize) + 1}/${Math.ceil(openCollectionItems.length / batchSize)}`)
-
-      for (const item of batch) {
+      // 1b. Google News RSS 搜索
+      for (const query of searchQueries.slice(0, 1)) {
         try {
-          // 用 Kimi 识别内容中是否包含目标专家的观点
-          const identifiedExperts = await identifyExpertInContent(
-            item.contentText,
-            experts.map(e => ({ name: e.name, nameEn: e.nameEn, aliases: e.aliases })),
-            KIMI_KEY
-          )
+          const items = await discoverViaGoogleNews(query, since)
+          discoveredItems.push(...items)
+          console.log(`[${expert.name}] Google News "${query}": ${items.length} items`)
+        } catch (err) {
+          console.error(`[${expert.name}] Google News error:`, (err as Error).message)
+        }
+      }
 
-          if (!identifiedExperts.length) {
-            console.log(`[OpenCollection] No expert identified in: ${item.title?.slice(0, 60)}...`)
+      // 1c. Brave Search
+      if (BRAVE_KEY) {
+        for (const query of searchQueries.slice(0, 1)) {
+          try {
+            const items = await discoverViaBraveSearch(query, BRAVE_KEY, since)
+            discoveredItems.push(...items)
+            console.log(`[${expert.name}] Brave Search "${query}": ${items.length} items`)
+          } catch (err) {
+            console.error(`[${expert.name}] Brave Search error:`, (err as Error).message)
+          }
+        }
+      }
+
+      // 1d. YouTube 搜索
+      if (YOUTUBE_KEY) {
+        for (const query of searchQueries.slice(0, 1)) {
+          try {
+            const items = await discoverViaYouTube(query, YOUTUBE_KEY, since)
+            discoveredItems.push(...items)
+            console.log(`[${expert.name}] YouTube "${query}": ${items.length} items`)
+          } catch (err) {
+            console.error(`[${expert.name}] YouTube error:`, (err as Error).message)
+          }
+        }
+      }
+
+      console.log(`[${expert.name}] Total discovered: ${discoveredItems.length} items`)
+
+      // ========== Phase 2: 去重 ==========
+      const uniqueItems = discoveredItems.filter(item => {
+        // URL 去重
+        const normalizedUrl = item.url.replace(/^https?:\/\//, '').replace(/\/$/, '')
+        if (processedUrls.has(normalizedUrl)) return false
+        processedUrls.add(normalizedUrl)
+        return true
+      })
+
+      // 标题相似度去重
+      const finalItems: typeof uniqueItems = []
+      for (const item of uniqueItems) {
+        let isDuplicate = false
+        for (const existing of finalItems) {
+          if (titleSimilarity(item.title, existing.title) > 0.7) {
+            isDuplicate = true
+            break
+          }
+        }
+        if (!isDuplicate) {
+          finalItems.push(item)
+        }
+      }
+
+      console.log(`[${expert.name}] After dedup: ${finalItems.length} items`)
+
+      // ========== Phase 3: 抓取内容 + 识别专家 + 提取信号 ==========
+      let expertContentCount = 0
+      let signalCount = 0
+
+      for (const item of finalItems.slice(0, 15)) { // 每个专家最多处理 15 条
+        try {
+          // 跳过教育页面
+          if (isEducationalPage(item.url)) {
+            console.log(`[${expert.name}] Skip educational page: ${item.url.slice(0, 60)}`)
             continue
           }
 
-          for (const identified of identifiedExperts) {
-            // 找到对应的专家
-            const matchedExpert = experts.find(e =>
-              e.name === identified.name ||
-              e.nameEn === identified.name ||
-              e.aliases.includes(identified.name)
-            )
+          // 抓取内容
+          let contentText = item.description || ''
+          let pageTitle = item.title
 
-            if (!matchedExpert) {
-              console.log(`[OpenCollection] Identified expert "${identified.name}" not in active list`)
-              continue
+          // 如果是 YouTube，用标题+描述作为内容
+          if (!item.url.includes('youtube.com') && !item.url.includes('youtu.be')) {
+            const pageContent = await fetchPageContent(item.url)
+            if (pageContent) {
+              pageTitle = pageContent.title || item.title
+              contentText = pageContent.content
+            }
+          }
+
+          if (!contentText || contentText.length < 200) {
+            console.log(`[${expert.name}] Content too short: ${item.url.slice(0, 60)}`)
+            continue
+          }
+
+          // 内容指纹去重
+          const fingerprint = contentFingerprint(contentText)
+          if (processedFingerprints.has(fingerprint)) {
+            console.log(`[${expert.name}] Content fingerprint duplicate`)
+            continue
+          }
+          processedFingerprints.add(fingerprint)
+
+          // 检查是否投资相关
+          if (!isInvestmentRelated(contentText)) {
+            console.log(`[${expert.name}] Not investment related: ${pageTitle.slice(0, 60)}`)
+            continue
+          }
+
+          // 检查是否教育内容
+          if (isEducationalContent(contentText)) {
+            console.log(`[${expert.name}] Educational content: ${pageTitle.slice(0, 60)}`)
+            continue
+          }
+
+          // ========== Phase 4: 专家识别（简化）==========
+          const { isMatch, confidence, matchedName } = identifyExpertInContentSimple(
+            contentText,
+            { name: expert.name, nameEn: expert.nameEn, aliases: expert.aliases }
+          )
+
+          if (!isMatch) {
+            console.log(`[${expert.name}] Expert not found in content: ${pageTitle.slice(0, 60)}`)
+            continue
+          }
+
+          expertContentCount++
+          console.log(`[${expert.name}] ✓ Content matched (confidence: ${confidence}): ${pageTitle.slice(0, 60)}`)
+
+          // ========== Phase 5: 信号提取 ==========
+          const systemPrompt = buildSystemPrompt(expert)
+          const userMsg = `Content about ${expert.name} — published: ${item.publishedAt ? item.publishedAt.toISOString() : 'unknown'}
+Source: ${item.url}
+Title: ${pageTitle}
+
+--- BEGIN CONTENT ---
+${contentText.slice(0, 12000)}
+--- END CONTENT ---
+
+Extract the top 1-2 highest-conviction investment views from ${expert.name}. If content is educational (explaining ETF types, definitions, etc.), return empty views.`
+
+          const parsed = await callKimi([
+            { role: 'system', content: systemPrompt },
+            { role: 'user', content: userMsg }
+          ], KIMI_KEY)
+
+          if (!parsed?.views?.length) {
+            console.log(`[${expert.name}] No signals extracted from: ${pageTitle.slice(0, 60)}`)
+            continue
+          }
+
+          for (const view of parsed.views) {
+            if ((view.confidence_in_extraction || 0) < 0.6) continue
+            if (view.direction === 'neutral') continue
+            if ((view.conviction || 0) < 5) continue
+
+            // 反幻觉检查
+            const validAssets = (view.target_assets || []).filter((a: string) => assetMentionedInText(a, contentText))
+            if (!validAssets.length) continue
+
+            // 解析 ETF
+            let etfTickers = validAssets.filter((a: string) => /^[A-Z]{2,6}$/.test(a.trim().toUpperCase()))
+            if (!etfTickers.length) {
+              for (const [ticker, aliases] of Object.entries(ASSET_ALIASES)) {
+                if (aliases.some(a => contentText.toLowerCase().includes(a))) {
+                  etfTickers.push(ticker)
+                }
+              }
             }
 
-            console.log(`[OpenCollection] ✓ ${matchedExpert.name} identified in "${item.title?.slice(0, 60)}..." (confidence: ${identified.confidence})`)
+            const conviction = Math.min(10, Math.max(1, Math.round(view.conviction || 5)))
+            const horizon = HORIZON_DAYS[view.time_horizon] !== undefined ? view.time_horizon : '1m'
+            const expiresAt = new Date(Date.now() + HORIZON_DAYS[horizon] * 86400000)
+            const rawSentiment = directionToSentiment(view.direction, conviction)
 
-            // 用识别到的专家观点段落替换原始内容，提高提取精度
-            const enrichedItem = {
-              ...item,
-              contentText: `${identified.quotedText}\n\n[上下文]\n${item.contentText.slice(0, 5000)}`,
-            }
+            await prisma.signal.create({
+              data: {
+                expertId: expert.id,
+                etfCode: etfTickers[0] || null,
+                etfTickers,
+                sentimentDirection: view.direction,
+                rawSentiment,
+                isCalibrated: false,
+                confidenceScore: view.confidence_in_extraction || 0.7,
+                convictionScore: conviction,
+                timeHorizon: horizon,
+                thesisType: view.thesis_type || 'macro',
+                hedgingLevel: Math.min(10, Math.max(0, view.hedging_level ?? 3)),
+                emotionalTone: view.emotional_tone || 'neutral',
+                specificity: Math.min(10, Math.max(0, view.specificity ?? 5)),
+                themes: view.themes || [],
+                extractedClaims: [view.claim].filter(Boolean),
+                supportingEvidence: view.evidence ? [view.evidence] : [],
+                sourcePlatform: item.source.includes('YouTube') ? 'youtube' : 'web',
+                sourceUrl: item.url,
+                sourceVerificationStatus: confidence >= 0.8 ? 'verified' : 'unverified',
+                rawSummary: (view.claim || '').slice(0, 300),
+                isManualInjection: false,
+                signalTimestamp: item.publishedAt || new Date(),
+                expiresAt,
+              }
+            })
 
-            await processContentItem(
-              enrichedItem,
-              matchedExpert,
-              KIMI_KEY,
-              allIngested,
-              'open_collection_verified' // 开放式收集 + Kimi 验证
-            )
+            signalCount++
+            allIngested.push({
+              expert: expert.name,
+              claim: view.claim,
+              direction: view.direction,
+              etfTickers,
+              source: item.source,
+              title: pageTitle.slice(0, 80),
+            })
+
+            console.log(`[${expert.name}] ✓ Signal: ${view.direction} ${etfTickers.join(',')} | ${view.claim?.slice(0, 60)}`)
           }
         } catch (err) {
-          console.error('[OpenCollection] Error processing item:', err)
+          console.error(`[${expert.name}] Error processing ${item.url.slice(0, 60)}:`, (err as Error).message)
         }
       }
+
+      console.log(`[${expert.name}] Summary: ${expertContentCount} matched content, ${signalCount} signals extracted`)
     }
 
-    // ==================== 统计报告 ====================
+    // ========== 统计报告 ==========
     const breakdown = allIngested.reduce((acc: any, item) => {
       const key = item.expert
       if (!acc[key]) acc[key] = { count: 0, sources: {} }
       acc[key].count++
-      const src = item.openCollection ? `open:${item.openCollection}` : item.source
+      const src = item.source || 'unknown'
       acc[key].sources[src] = (acc[key].sources[src] || 0) + 1
       return acc
     }, {})
 
-    const openCollectionCount = allIngested.filter(i => i.openCollection).length
-    const directSourceCount = allIngested.filter(i => !i.openCollection).length
-
     return successResponse({
       expertsProcessed: experts.length,
       signalsCreated: allIngested.length,
-      fromDirectSources: directSourceCount,
-      fromOpenCollection: openCollectionCount,
       breakdown,
+      processedUrls: processedUrls.size,
+      processedFingerprints: processedFingerprints.size,
     })
   } catch (err) {
     console.error('[FetchSignals] Fatal error:', err)
