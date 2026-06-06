@@ -79,8 +79,8 @@ export default function DashboardPage() {
         </div>
       </header>
 
-      {/* Rebalancing Alert */}
-      <RebalancingAlert events={rebalancing} />
+      {/* Rebalancing Alert - removed, using SuggestedETFPanel instead */}
+      {/* <RebalancingAlert events={rebalancing} /> */}
 
       {/* Main Content */}
       <main className="max-w-[1600px] mx-auto px-4 py-6 space-y-6">
