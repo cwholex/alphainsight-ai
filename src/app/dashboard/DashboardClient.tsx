@@ -1,7 +1,6 @@
 'use client'
 
 import { useState, useEffect } from 'react'
-import { useQuery } from '@tanstack/react-query'
 import PortfolioSummary from '@/components/PortfolioSummary'
 import ExpertGrid from '@/components/ExpertGrid'
 import SignalFeed from '@/components/SignalFeed'
@@ -12,72 +11,50 @@ import SuggestedETFPanel from '@/components/SuggestedETFPanel'
 
 export default function DashboardPage() {
   const [selectedExpert, setSelectedExpert] = useState<string | null>(null)
-  const [debugData, setDebugData] = useState<any>(null)
+  const [experts, setExperts] = useState<any[]>([])
+  const [signals, setSignals] = useState<any[]>([])
+  const [holdings, setHoldings] = useState<any[]>([])
+  const [technical, setTechnical] = useState<any[]>([])
+  const [rebalancing, setRebalancing] = useState<any[]>([])
+  const [loading, setLoading] = useState(true)
 
-  // Debug: test native fetch
   useEffect(() => {
-    fetch('/api/holdings')
-      .then(r => r.json())
-      .then(d => {
-        console.log('HOLDINGS:', d)
-        setDebugData(d)
-      })
-      .catch(e => console.error('FETCH ERROR:', e))
+    async function loadData() {
+      try {
+        const [expertsRes, signalsRes, holdingsRes, technicalRes, rebalancingRes] = await Promise.all([
+          fetch('/api/experts').then(r => r.json()),
+          fetch('/api/signals').then(r => r.json()),
+          fetch('/api/holdings').then(r => r.json()),
+          fetch('/api/technical').then(r => r.json()),
+          fetch('/api/rebalancing').then(r => r.json()),
+        ])
+
+        setExperts(expertsRes.data || [])
+        setSignals(signalsRes.data || [])
+        setHoldings(holdingsRes.data || [])
+        setTechnical(technicalRes.data || [])
+        setRebalancing(rebalancingRes.data || [])
+      } catch (e) {
+        console.error('Failed to load data:', e)
+      } finally {
+        setLoading(false)
+      }
+    }
+
+    loadData()
   }, [])
-
-  const { data: experts = [] } = useQuery({
-    queryKey: ['experts'],
-    queryFn: async () => {
-      const res = await fetch('/api/experts')
-      const data = await res.json()
-      return data.data || []
-    },
-    refetchOnMount: 'always',
-  })
-
-  const { data: signals = [] } = useQuery({
-    queryKey: ['signals'],
-    queryFn: async () => {
-      const res = await fetch('/api/signals')
-      const data = await res.json()
-      return data.data || []
-    },
-    refetchOnMount: 'always',
-  })
-
-  const { data: holdings = [] } = useQuery({
-    queryKey: ['holdings'],
-    queryFn: async () => {
-      const res = await fetch('/api/holdings')
-      const data = await res.json()
-      return data.data || []
-    },
-    refetchOnMount: 'always',
-  })
-
-  const { data: technical = [] } = useQuery({
-    queryKey: ['technical'],
-    queryFn: async () => {
-      const res = await fetch('/api/technical')
-      const data = await res.json()
-      return data.data || []
-    },
-    refetchOnMount: 'always',
-  })
-
-  const { data: rebalancing = [] } = useQuery({
-    queryKey: ['rebalancing'],
-    queryFn: async () => {
-      const res = await fetch('/api/rebalancing')
-      const data = await res.json()
-      return data.data || []
-    },
-    refetchOnMount: 'always',
-  })
 
   const filteredSignals = selectedExpert
     ? signals.filter((s: any) => s.expertId === selectedExpert)
     : signals
+
+  if (loading) {
+    return (
+      <div className="min-h-screen bg-[#0A0F1E] flex items-center justify-center">
+        <div className="text-white">加载中...</div>
+      </div>
+    )
+  }
 
   return (
     <div className="min-h-screen bg-[#0A0F1E]">
@@ -92,17 +69,12 @@ export default function DashboardPage() {
           </div>
           <div className="flex items-center gap-3">
             <span className="text-[#7A8FA6] text-xs">专家校准的语义投资组合智能</span>
-            {debugData && (
-              <span className="text-[#10B981] text-xs">
-                API: {debugData.data?.length || 0} ETFs
-              </span>
-            )}
+            <span className="text-[#10B981] text-xs">
+              {holdings.length} ETFs | {experts.length} Experts
+            </span>
           </div>
         </div>
       </header>
-
-      {/* Rebalancing Alert - removed, using SuggestedETFPanel instead */}
-      {/* <RebalancingAlert events={rebalancing} /> */}
 
       {/* Main Content */}
       <main className="max-w-[1600px] mx-auto px-4 py-6 space-y-6">
