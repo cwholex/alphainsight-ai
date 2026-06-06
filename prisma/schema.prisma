@@ -85,7 +85,6 @@ model ETFHolding {
   marketValue            Float    @default(0)
   lastPrice              Float    @default(0)
   priceSnapshotTimestamp DateTime?
-  isActive               Boolean  @default(true)
   createdAt              DateTime @default(now())
   updatedAt              DateTime @updatedAt
 
