@@ -5,12 +5,23 @@ import { successResponse, errorResponse } from '@/lib/api-helpers'
 
 export async function GET() {
   try {
+    console.log('[Holdings API] Starting request...')
+    console.log('[Holdings API] Prisma client initialized:', !!prisma)
+    
     const holdings = await prisma.eTFHolding.findMany({
       orderBy: { marketValue: 'desc' },
     })
+    
+    console.log('[Holdings API] Found', holdings.length, 'holdings')
     return successResponse(holdings)
-  } catch (err) {
-    return errorResponse('Failed to fetch holdings', 500, err)
+  } catch (err: any) {
+    console.error('[Holdings API] Error:', err.message)
+    console.error('[Holdings API] Stack:', err.stack)
+    return errorResponse('Failed to fetch holdings', 500, { 
+      message: err.message, 
+      stack: err.stack,
+      code: err.code 
+    })
   }
 }
 
