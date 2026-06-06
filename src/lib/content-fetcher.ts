@@ -157,7 +157,7 @@ export async function fetchRSSFeed(feedUrl: string, expertName: string, since: D
 
     const itemRegex = /<item[^>]*>([\s\S]*?)<\/item>/gi
     const entryRegex = /<entry[^>]*>([\s\S]*?)<\/entry>/gi
-    const items = [...text.matchAll(itemRegex), ...text.matchAll(entryRegex)]
+    const items = [...Array.from(text.matchAll(itemRegex)), ...Array.from(text.matchAll(entryRegex))]
 
     for (const match of items.slice(0, 8)) {
       const itemXml = match[1]
